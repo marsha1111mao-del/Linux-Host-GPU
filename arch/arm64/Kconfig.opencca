@@ -1,4 +1,10 @@
 menu "OpenCCA Options"
 
+config OPENCCA_HW_DEBUG
+	bool "Enable Hardware Debugging"
+    default n
+	help
+	  Enable hardware debugging
+
 
 endmenu

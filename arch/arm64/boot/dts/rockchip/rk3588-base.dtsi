@@ -1118,11 +1118,15 @@
 					 <&cru PCLK_AUDIO_ROOT>;
 				#power-domain-cells = <0>;
 			};
+
+			#ifndef CONFIG_OPENCCA_HW_DEBUG
+			/* opencca: remove sdmmc reference for hardware debug */
 			power-domain@RK3588_PD_SDMMC {
 				reg = <RK3588_PD_SDMMC>;
 				pm_qos = <&qos_sdmmc>;
 				#power-domain-cells = <0>;
 			};
+			#endif
 		};
 	};
 
@@ -1487,10 +1491,13 @@
 		reg = <0x0 0xfdf39000 0x0 0x20>;
 	};
 
+	#ifndef CONFIG_OPENCCA_HW_DEBUG
+	/* opencca: remove sdmmc reference for hardware debug */
 	qos_sdmmc: qos@fdf3d800 {
 		compatible = "rockchip,rk3588-qos", "syscon";
 		reg = <0x0 0xfdf3d800 0x0 0x20>;
 	};
+	#endif
 
 	qos_usb3_1: qos@fdf3e000 {
 		compatible = "rockchip,rk3588-qos", "syscon";
@@ -1915,6 +1922,13 @@
 		status = "disabled";
 	};
 
+	#ifdef CONFIG_OPENCCA_HW_DEBUG
+	/* opencca: remove sdmmc reference for hardware debug */
+	sdmmc: mmc@fe2c0000 {
+		compatible = "dummy";
+		status = "disabled";
+	};
+	#else
 	sdmmc: mmc@fe2c0000 {
 		compatible = "rockchip,rk3588-dw-mshc", "rockchip,rk3288-dw-mshc";
 		reg = <0x0 0xfe2c0000 0x0 0x4000>;
@@ -1929,6 +1943,7 @@
 		power-domains = <&power RK3588_PD_SDMMC>;
 		status = "disabled";
 	};
+	#endif
 
 	sdio: mmc@fe2d0000 {
 		compatible = "rockchip,rk3588-dw-mshc", "rockchip,rk3288-dw-mshc";

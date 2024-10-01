@@ -152,9 +152,16 @@ static const struct rockchip_grf_value rk3588_defaults[] __initconst = {
 	{ "jtag switching", RK3588_GRF_SOC_CON6, HIWORD_UPDATE(0, 1, 14) },
 };
 
+
 static const struct rockchip_grf_info rk3588_sysgrf __initconst = {
+	#ifdef CONFIG_OPENCCA_HW_DEBUG
+	/* opencca: disable jtag switching */
+	.values = NULL,
+	.num_values = 0
+	#else
 	.values = rk3588_defaults,
 	.num_values = ARRAY_SIZE(rk3588_defaults),
+	#endif
 };
 
 static const struct of_device_id rockchip_grf_dt_match[] __initconst = {
