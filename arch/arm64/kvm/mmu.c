@@ -1075,7 +1075,7 @@ void kvm_free_stage2_pgd(struct kvm_s2_mmu *mmu)
 	if (kvm_is_realm(kvm) &&
 	    (kvm_realm_state(kvm) != REALM_STATE_DEAD &&
 	     kvm_realm_state(kvm) != REALM_STATE_NONE)) {
-		kvm_stage2_unmap_range(mmu, 0, (~0ULL) & PAGE_MASK);
+		kvm_stage2_unmap_range(mmu, 0, (~0ULL) & PAGE_MASK, true);
 		write_unlock(&kvm->mmu_lock);
 		kvm_realm_destroy_rtts(kvm, pgt->ia_bits);
 		return;
