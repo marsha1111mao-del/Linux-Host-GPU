@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0 or MIT
+
+config PMTHOR
+	tristate "Pmthor"
+	depends on OF && ARM64
+	help
+	  DRM driver for ARM Mali CSF-based GPUs.
+
+	  This driver is for Mali (or Immortalis) Valhall Gxxx GPUs.
+
+	  Note that the Mali-G68 and Mali-G78, while Valhall architecture, will
+	  be supported with the panfrost driver as they are not CSF GPUs.

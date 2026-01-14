@@ -25,16 +25,18 @@ static inline kvm_pfn_t folio_file_pfn(struct folio *folio, pgoff_t index)
 	return folio_pfn(folio) + (index & (folio_nr_pages(folio) - 1));
 }
 
-static int __kvm_gmem_prepare_folio(struct kvm *kvm, struct kvm_memory_slot *slot,
-				    pgoff_t index, struct folio *folio)
+static int __kvm_gmem_prepare_folio(struct kvm *kvm,
+				    struct kvm_memory_slot *slot, pgoff_t index,
+				    struct folio *folio)
 {
 #ifdef CONFIG_HAVE_KVM_ARCH_GMEM_PREPARE
 	kvm_pfn_t pfn = folio_file_pfn(folio, index);
 	gfn_t gfn = slot->base_gfn + index - slot->gmem.pgoff;
 	int rc = kvm_arch_gmem_prepare(kvm, gfn, pfn, folio_order(folio));
 	if (rc) {
-		pr_warn_ratelimited("gmem: Failed to prepare folio for index %lx GFN %llx PFN %llx error %d.\n",
-				    index, gfn, pfn, rc);
+		pr_warn_ratelimited(
+			"gmem: Failed to prepare folio for index %lx GFN %llx PFN %llx error %d.\n",
+			index, gfn, pfn, rc);
 		return rc;
 	}
 #endif
@@ -115,7 +117,8 @@ static void kvm_gmem_invalidate_begin(struct kvm_gmem *gmem, pgoff_t start,
 
 		struct kvm_gfn_range gfn_range = {
 			.start = slot->base_gfn + max(pgoff, start) - pgoff,
-			.end = slot->base_gfn + min(pgoff + slot->npages, end) - pgoff,
+			.end = slot->base_gfn + min(pgoff + slot->npages, end) -
+			       pgoff,
 			.slot = slot,
 			.may_block = true,
 		};
@@ -191,7 +194,7 @@ static long kvm_gmem_allocate(struct inode *inode, loff_t offset, loff_t len)
 	end = (offset + len) >> PAGE_SHIFT;
 
 	r = 0;
-	for (index = start; index < end; ) {
+	for (index = start; index < end;) {
 		struct folio *folio;
 
 		if (signal_pending(current)) {
@@ -303,9 +306,9 @@ static inline struct file *kvm_gmem_get_file(struct kvm_memory_slot *slot)
 }
 
 static struct file_operations kvm_gmem_fops = {
-	.open		= generic_file_open,
-	.release	= kvm_gmem_release,
-	.fallocate	= kvm_gmem_fallocate,
+	.open = generic_file_open,
+	.release = kvm_gmem_release,
+	.fallocate = kvm_gmem_fallocate,
 };
 
 void kvm_gmem_init(struct module *module)
@@ -321,7 +324,8 @@ static int kvm_gmem_migrate_folio(struct address_space *mapping,
 	return -EINVAL;
 }
 
-static int kvm_gmem_error_folio(struct address_space *mapping, struct folio *folio)
+static int kvm_gmem_error_folio(struct address_space *mapping,
+				struct folio *folio)
 {
 	struct list_head *gmem_list = &mapping->i_private_list;
 	struct kvm_gmem *gmem;
@@ -365,7 +369,7 @@ static void kvm_gmem_free_folio(struct folio *folio)
 
 static const struct address_space_operations kvm_gmem_aops = {
 	.dirty_folio = noop_dirty_folio,
-	.migrate_folio	= kvm_gmem_migrate_folio,
+	.migrate_folio = kvm_gmem_migrate_folio,
 	.error_remove_folio = kvm_gmem_error_folio,
 #ifdef CONFIG_HAVE_KVM_ARCH_GMEM_INVALIDATE
 	.free_folio = kvm_gmem_free_folio,
@@ -388,8 +392,8 @@ static int kvm_gmem_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 	return -EINVAL;
 }
 static const struct inode_operations kvm_gmem_iops = {
-	.getattr	= kvm_gmem_getattr,
-	.setattr	= kvm_gmem_setattr,
+	.getattr = kvm_gmem_getattr,
+	.setattr = kvm_gmem_setattr,
 };
 
 static int __kvm_gmem_create(struct kvm *kvm, loff_t size, u64 flags)
@@ -551,10 +555,10 @@ void kvm_gmem_unbind(struct kvm_memory_slot *slot)
 }
 
 /* Returns a locked folio on success.  */
-static struct folio *
-__kvm_gmem_get_pfn(struct file *file, struct kvm_memory_slot *slot,
-		   gfn_t gfn, kvm_pfn_t *pfn, bool *is_prepared,
-		   int *max_order)
+static struct folio *__kvm_gmem_get_pfn(struct file *file,
+					struct kvm_memory_slot *slot, gfn_t gfn,
+					kvm_pfn_t *pfn, bool *is_prepared,
+					int *max_order)
 {
 	pgoff_t index = gfn - slot->base_gfn + slot->gmem.pgoff;
 	struct kvm_gmem *gmem = file->private_data;
@@ -589,8 +593,8 @@ __kvm_gmem_get_pfn(struct file *file, struct kvm_memory_slot *slot,
 	return folio;
 }
 
-int kvm_gmem_get_pfn(struct kvm *kvm, struct kvm_memory_slot *slot,
-		     gfn_t gfn, kvm_pfn_t *pfn, int *max_order)
+int kvm_gmem_get_pfn(struct kvm *kvm, struct kvm_memory_slot *slot, gfn_t gfn,
+		     kvm_pfn_t *pfn, int *max_order)
 {
 	struct file *file = kvm_gmem_get_file(slot);
 	struct folio *folio;
@@ -600,7 +604,8 @@ int kvm_gmem_get_pfn(struct kvm *kvm, struct kvm_memory_slot *slot,
 	if (!file)
 		return -EFAULT;
 
-	folio = __kvm_gmem_get_pfn(file, slot, gfn, pfn, &is_prepared, max_order);
+	folio = __kvm_gmem_get_pfn(file, slot, gfn, pfn, &is_prepared,
+				   max_order);
 	if (IS_ERR(folio)) {
 		r = PTR_ERR(folio);
 		goto out;
@@ -620,8 +625,9 @@ out:
 EXPORT_SYMBOL_GPL(kvm_gmem_get_pfn);
 
 #ifdef CONFIG_KVM_GENERIC_PRIVATE_MEM
-long kvm_gmem_populate(struct kvm *kvm, gfn_t start_gfn, void __user *src, long npages,
-		       kvm_gmem_populate_cb post_populate, void *opaque)
+long kvm_gmem_populate(struct kvm *kvm, gfn_t start_gfn, void __user *src,
+		       long npages, kvm_gmem_populate_cb post_populate,
+		       void *opaque)
 {
 	struct file *file;
 	struct kvm_memory_slot *slot;
@@ -644,7 +650,8 @@ long kvm_gmem_populate(struct kvm *kvm, gfn_t start_gfn, void __user *src, long 
 
 	filemap_invalidate_lock(file->f_mapping);
 
-	npages = min_t(ulong, slot->npages - (start_gfn - slot->base_gfn), npages);
+	npages = min_t(ulong, slot->npages - (start_gfn - slot->base_gfn),
+		       npages);
 	for (i = 0; i < npages; i += (1 << max_order)) {
 		struct folio *folio;
 		gfn_t gfn = start_gfn + i;
@@ -656,7 +663,8 @@ long kvm_gmem_populate(struct kvm *kvm, gfn_t start_gfn, void __user *src, long 
 			break;
 		}
 
-		folio = __kvm_gmem_get_pfn(file, slot, gfn, &pfn, &is_prepared, &max_order);
+		folio = __kvm_gmem_get_pfn(file, slot, gfn, &pfn, &is_prepared,
+					   &max_order);
 		if (IS_ERR(folio)) {
 			ret = PTR_ERR(folio);
 			break;
@@ -674,9 +682,10 @@ long kvm_gmem_populate(struct kvm *kvm, gfn_t start_gfn, void __user *src, long 
 			(npages - i) < (1 << max_order));
 
 		ret = -EINVAL;
-		while (!kvm_range_has_memory_attributes(kvm, gfn, gfn + (1 << max_order),
-							KVM_MEMORY_ATTRIBUTE_PRIVATE,
-							KVM_MEMORY_ATTRIBUTE_PRIVATE)) {
+		while (!kvm_range_has_memory_attributes(
+			kvm, gfn, gfn + (1 << max_order),
+			KVM_MEMORY_ATTRIBUTE_PRIVATE,
+			KVM_MEMORY_ATTRIBUTE_PRIVATE)) {
 			if (!max_order)
 				goto put_folio_and_exit;
 			max_order--;

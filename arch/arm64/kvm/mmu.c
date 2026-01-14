@@ -79,7 +79,7 @@ static int stage2_apply_range(struct kvm_s2_mmu *mmu, phys_addr_t addr,
 	return ret;
 }
 
-#define stage2_apply_range_resched(mmu, addr, end, fn)			\
+#define stage2_apply_range_resched(mmu, addr, end, fn) \
 	stage2_apply_range(mmu, addr, end, fn, true)
 
 /*
@@ -134,9 +134,8 @@ static int kvm_mmu_split_huge_pages(struct kvm *kvm, phys_addr_t addr,
 			write_unlock(&kvm->mmu_lock);
 			cond_resched();
 			/* Eager page splitting is best-effort. */
-			ret = __kvm_mmu_topup_memory_cache(cache,
-							   cache_capacity,
-							   cache_capacity);
+			ret = __kvm_mmu_topup_memory_cache(
+				cache, cache_capacity, cache_capacity);
 			write_lock(&kvm->mmu_lock);
 			if (ret)
 				break;
@@ -172,11 +171,10 @@ int kvm_arch_flush_remote_tlbs(struct kvm *kvm)
 	return 0;
 }
 
-int kvm_arch_flush_remote_tlbs_range(struct kvm *kvm,
-				      gfn_t gfn, u64 nr_pages)
+int kvm_arch_flush_remote_tlbs_range(struct kvm *kvm, gfn_t gfn, u64 nr_pages)
 {
-	kvm_tlb_flush_vmid_range(&kvm->arch.mmu,
-				gfn << PAGE_SHIFT, nr_pages << PAGE_SHIFT);
+	kvm_tlb_flush_vmid_range(&kvm->arch.mmu, gfn << PAGE_SHIFT,
+				 nr_pages << PAGE_SHIFT);
 	return 0;
 }
 
@@ -317,8 +315,8 @@ static void invalidate_icache_guest_page(void *va, size_t size)
  * destroying the VM), otherwise another faulting VCPU may come in and mess
  * with things behind our backs.
  */
-static void __unmap_stage2_range(struct kvm_s2_mmu *mmu, phys_addr_t start, u64 size,
-				 bool may_block, bool only_shared)
+static void __unmap_stage2_range(struct kvm_s2_mmu *mmu, phys_addr_t start,
+				 u64 size, bool may_block, bool only_shared)
 {
 	struct kvm *kvm = kvm_s2_mmu_to_kvm(mmu);
 	phys_addr_t end = start + size;
@@ -329,18 +327,18 @@ static void __unmap_stage2_range(struct kvm_s2_mmu *mmu, phys_addr_t start, u64 
 	if (kvm_is_realm(kvm))
 		kvm_realm_unmap_range(kvm, start, size, !only_shared);
 	else
-		WARN_ON(stage2_apply_range(mmu, start, end,
-					   kvm_pgtable_stage2_unmap,
-					   may_block));
+		WARN_ON(stage2_apply_range(
+			mmu, start, end, kvm_pgtable_stage2_unmap, may_block));
 }
 
-void kvm_stage2_unmap_range(struct kvm_s2_mmu *mmu, phys_addr_t start,
-			    u64 size, bool may_block)
+void kvm_stage2_unmap_range(struct kvm_s2_mmu *mmu, phys_addr_t start, u64 size,
+			    bool may_block)
 {
 	__unmap_stage2_range(mmu, start, size, true, false);
 }
 
-void kvm_stage2_flush_range(struct kvm_s2_mmu *mmu, phys_addr_t addr, phys_addr_t end)
+void kvm_stage2_flush_range(struct kvm_s2_mmu *mmu, phys_addr_t addr,
+			    phys_addr_t end)
 {
 	stage2_apply_range_resched(mmu, addr, end, kvm_pgtable_stage2_flush);
 }
@@ -755,8 +753,7 @@ int create_hyp_stack(phys_addr_t phys_addr, unsigned long *haddr)
  * @haddr:	HYP VA for this mapping
  */
 int create_hyp_io_mappings(phys_addr_t phys_addr, size_t size,
-			   void __iomem **kaddr,
-			   void __iomem **haddr)
+			   void __iomem **kaddr, void __iomem **haddr)
 {
 	unsigned long addr;
 	int ret;
@@ -773,8 +770,8 @@ int create_hyp_io_mappings(phys_addr_t phys_addr, size_t size,
 		return 0;
 	}
 
-	ret = __create_hyp_private_mapping(phys_addr, size,
-					   &addr, PAGE_HYP_DEVICE);
+	ret = __create_hyp_private_mapping(phys_addr, size, &addr,
+					   PAGE_HYP_DEVICE);
 	if (ret) {
 		iounmap(*kaddr);
 		*kaddr = NULL;
@@ -792,16 +789,15 @@ int create_hyp_io_mappings(phys_addr_t phys_addr, size_t size,
  * @size:	Size of the region being mapped
  * @haddr:	HYP VA for this mapping
  */
-int create_hyp_exec_mappings(phys_addr_t phys_addr, size_t size,
-			     void **haddr)
+int create_hyp_exec_mappings(phys_addr_t phys_addr, size_t size, void **haddr)
 {
 	unsigned long addr;
 	int ret;
 
 	BUG_ON(is_kernel_in_hyp_mode());
 
-	ret = __create_hyp_private_mapping(phys_addr, size,
-					   &addr, PAGE_HYP_EXEC);
+	ret = __create_hyp_private_mapping(phys_addr, size, &addr,
+					   PAGE_HYP_EXEC);
 	if (ret) {
 		*haddr = NULL;
 		return ret;
@@ -813,20 +809,20 @@ int create_hyp_exec_mappings(phys_addr_t phys_addr, size_t size,
 
 static struct kvm_pgtable_mm_ops kvm_user_mm_ops = {
 	/* We shouldn't need any other callback to walk the PT */
-	.phys_to_virt		= kvm_host_va,
+	.phys_to_virt = kvm_host_va,
 };
 
 static int get_user_mapping_size(struct kvm *kvm, u64 addr)
 {
 	struct kvm_pgtable pgt = {
-		.pgd		= (kvm_pteref_t)kvm->mm->pgd,
-		.ia_bits	= vabits_actual,
-		.start_level	= (KVM_PGTABLE_LAST_LEVEL -
-				   ARM64_HW_PGTABLE_LEVELS(pgt.ia_bits) + 1),
-		.mm_ops		= &kvm_user_mm_ops,
+		.pgd = (kvm_pteref_t)kvm->mm->pgd,
+		.ia_bits = vabits_actual,
+		.start_level = (KVM_PGTABLE_LAST_LEVEL -
+				ARM64_HW_PGTABLE_LEVELS(pgt.ia_bits) + 1),
+		.mm_ops = &kvm_user_mm_ops,
 	};
 	unsigned long flags;
-	kvm_pte_t pte = 0;	/* Keep GCC quiet... */
+	kvm_pte_t pte = 0; /* Keep GCC quiet... */
 	s8 level = S8_MAX;
 	int ret;
 
@@ -859,21 +855,21 @@ static int get_user_mapping_size(struct kvm *kvm, u64 addr)
 }
 
 static struct kvm_pgtable_mm_ops kvm_s2_mm_ops = {
-	.zalloc_page		= stage2_memcache_zalloc_page,
-	.zalloc_pages_exact	= kvm_s2_zalloc_pages_exact,
-	.free_pages_exact	= kvm_s2_free_pages_exact,
-	.free_unlinked_table	= stage2_free_unlinked_table,
-	.get_page		= kvm_host_get_page,
-	.put_page		= kvm_s2_put_page,
-	.page_count		= kvm_host_page_count,
-	.phys_to_virt		= kvm_host_va,
-	.virt_to_phys		= kvm_host_pa,
-	.dcache_clean_inval_poc	= clean_dcache_guest_page,
-	.icache_inval_pou	= invalidate_icache_guest_page,
+	.zalloc_page = stage2_memcache_zalloc_page,
+	.zalloc_pages_exact = kvm_s2_zalloc_pages_exact,
+	.free_pages_exact = kvm_s2_free_pages_exact,
+	.free_unlinked_table = stage2_free_unlinked_table,
+	.get_page = kvm_host_get_page,
+	.put_page = kvm_s2_put_page,
+	.page_count = kvm_host_page_count,
+	.phys_to_virt = kvm_host_va,
+	.virt_to_phys = kvm_host_pa,
+	.dcache_clean_inval_poc = clean_dcache_guest_page,
+	.icache_inval_pou = invalidate_icache_guest_page,
 };
 
-static int kvm_init_ipa_range(struct kvm *kvm,
-			      struct kvm_s2_mmu *mmu, unsigned long type)
+static int kvm_init_ipa_range(struct kvm *kvm, struct kvm_s2_mmu *mmu,
+			      unsigned long type)
 {
 	u32 kvm_ipa_limit = get_kvm_ipa_limit();
 	u64 mmfr0, mmfr1;
@@ -893,8 +889,9 @@ static int kvm_init_ipa_range(struct kvm *kvm,
 	} else {
 		phys_shift = KVM_PHYS_SHIFT;
 		if (phys_shift > ipa_limit) {
-			pr_warn_once("%s using unsupported default IPA limit, upgrade your VMM\n",
-				     current->comm);
+			pr_warn_once(
+				"%s using unsupported default IPA limit, upgrade your VMM\n",
+				current->comm);
 			return -EINVAL;
 		}
 	}
@@ -921,7 +918,8 @@ static int kvm_init_ipa_range(struct kvm *kvm,
  *   guests, and the caller must hold kvm->lock as this is called on a
  *   per-vcpu basis.
  */
-int kvm_init_stage2_mmu(struct kvm *kvm, struct kvm_s2_mmu *mmu, unsigned long type)
+int kvm_init_stage2_mmu(struct kvm *kvm, struct kvm_s2_mmu *mmu,
+			unsigned long type)
 {
 	int cpu, err;
 	struct kvm_pgtable *pgt;
@@ -966,7 +964,7 @@ int kvm_init_stage2_mmu(struct kvm *kvm, struct kvm_s2_mmu *mmu, unsigned long t
 	for_each_possible_cpu(cpu)
 		*per_cpu_ptr(mmu->last_vcpu_ran, cpu) = -1;
 
-	 /* The eager page splitting is disabled by default */
+	/* The eager page splitting is disabled by default */
 	mmu->split_page_chunk_size = KVM_ARM_EAGER_SPLIT_CHUNK_SIZE_DEFAULT;
 	mmu->split_page_cache.gfp_zero = __GFP_ZERO;
 
@@ -1027,7 +1025,8 @@ static void stage2_unmap_memslot(struct kvm *kvm,
 
 		if (!(vma->vm_flags & VM_PFNMAP)) {
 			gpa_t gpa = addr + (vm_start - memslot->userspace_addr);
-			kvm_stage2_unmap_range(&kvm->arch.mmu, gpa, vm_end - vm_start, true);
+			kvm_stage2_unmap_range(&kvm->arch.mmu, gpa,
+					       vm_end - vm_start, true);
 		}
 		hva = vm_end;
 	} while (hva < reg_end);
@@ -1072,9 +1071,8 @@ void kvm_free_stage2_pgd(struct kvm_s2_mmu *mmu)
 
 	write_lock(&kvm->mmu_lock);
 	pgt = mmu->pgt;
-	if (kvm_is_realm(kvm) &&
-	    (kvm_realm_state(kvm) != REALM_STATE_DEAD &&
-	     kvm_realm_state(kvm) != REALM_STATE_NONE)) {
+	if (kvm_is_realm(kvm) && (kvm_realm_state(kvm) != REALM_STATE_DEAD &&
+				  kvm_realm_state(kvm) != REALM_STATE_NONE)) {
 		kvm_stage2_unmap_range(mmu, 0, (~0ULL) & PAGE_MASK, true);
 		write_unlock(&kvm->mmu_lock);
 		kvm_realm_destroy_rtts(kvm, pgt->ia_bits);
@@ -1106,8 +1104,7 @@ static void *hyp_mc_alloc_fn(void *unused)
 void free_hyp_memcache(struct kvm_hyp_memcache *mc)
 {
 	if (is_protected_kvm_enabled())
-		__free_hyp_memcache(mc, hyp_mc_free_fn,
-				    kvm_host_va, NULL);
+		__free_hyp_memcache(mc, hyp_mc_free_fn, kvm_host_va, NULL);
 }
 
 int topup_hyp_memcache(struct kvm_hyp_memcache *mc, unsigned long min_pages)
@@ -1115,8 +1112,8 @@ int topup_hyp_memcache(struct kvm_hyp_memcache *mc, unsigned long min_pages)
 	if (!is_protected_kvm_enabled())
 		return 0;
 
-	return __topup_hyp_memcache(mc, min_pages, hyp_mc_alloc_fn,
-				    kvm_host_pa, NULL);
+	return __topup_hyp_memcache(mc, min_pages, hyp_mc_alloc_fn, kvm_host_pa,
+				    NULL);
 }
 
 /**
@@ -1176,9 +1173,11 @@ int kvm_phys_addr_ioremap(struct kvm *kvm, phys_addr_t guest_ipa,
  * @addr:	Start address of range
  * @end:	End address of range
  */
-void kvm_stage2_wp_range(struct kvm_s2_mmu *mmu, phys_addr_t addr, phys_addr_t end)
+void kvm_stage2_wp_range(struct kvm_s2_mmu *mmu, phys_addr_t addr,
+			 phys_addr_t end)
 {
-	stage2_apply_range_resched(mmu, addr, end, kvm_pgtable_stage2_wrprotect);
+	stage2_apply_range_resched(mmu, addr, end,
+				   kvm_pgtable_stage2_wrprotect);
 }
 
 /**
@@ -1253,11 +1252,12 @@ static void kvm_mmu_split_memory_region(struct kvm *kvm, int slot)
  * splits them to PAGE_SIZE. Caller must acquire kvm->mmu_lock.
  */
 void kvm_arch_mmu_enable_log_dirty_pt_masked(struct kvm *kvm,
-		struct kvm_memory_slot *slot,
-		gfn_t gfn_offset, unsigned long mask)
+					     struct kvm_memory_slot *slot,
+					     gfn_t gfn_offset,
+					     unsigned long mask)
 {
 	phys_addr_t base_gfn = slot->base_gfn + gfn_offset;
-	phys_addr_t start = (base_gfn +  __ffs(mask)) << PAGE_SHIFT;
+	phys_addr_t start = (base_gfn + __ffs(mask)) << PAGE_SHIFT;
 	phys_addr_t end = (base_gfn + __fls(mask) + 1) << PAGE_SHIFT;
 
 	lockdep_assert_held_write(&kvm->mmu_lock);
@@ -1352,10 +1352,10 @@ static bool fault_supports_stage2_huge_mapping(struct kvm_memory_slot *memslot,
  *
  * Returns the size of the mapping.
  */
-static long
-transparent_hugepage_adjust(struct kvm *kvm, struct kvm_memory_slot *memslot,
-			    unsigned long hva, kvm_pfn_t *pfnp,
-			    phys_addr_t *ipap)
+static long transparent_hugepage_adjust(struct kvm *kvm,
+					struct kvm_memory_slot *memslot,
+					unsigned long hva, kvm_pfn_t *pfnp,
+					phys_addr_t *ipap)
 {
 	kvm_pfn_t pfn = *pfnp;
 
@@ -1446,9 +1446,8 @@ static bool kvm_vma_mte_allowed(struct vm_area_struct *vma)
 	return vma->vm_flags & VM_MTE_ALLOWED;
 }
 
-static int realm_map_ipa(struct kvm *kvm, phys_addr_t ipa,
-			 kvm_pfn_t pfn, unsigned long map_size,
-			 enum kvm_pgtable_prot prot,
+static int realm_map_ipa(struct kvm *kvm, phys_addr_t ipa, kvm_pfn_t pfn,
+			 unsigned long map_size, enum kvm_pgtable_prot prot,
 			 struct kvm_mmu_memory_cache *memcache)
 {
 	struct realm *realm = &kvm->arch.realm;
@@ -1464,8 +1463,7 @@ static int realm_map_ipa(struct kvm *kvm, phys_addr_t ipa,
 	return realm_map_protected(realm, ipa, page, map_size, memcache);
 }
 
-static int private_memslot_fault(struct kvm_vcpu *vcpu,
-				 phys_addr_t fault_ipa,
+static int private_memslot_fault(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 				 struct kvm_memory_slot *memslot)
 {
 	struct kvm *kvm = vcpu->kvm;
@@ -1483,11 +1481,9 @@ static int private_memslot_fault(struct kvm_vcpu *vcpu,
 	bool is_priv_gfn = (gpa == fault_ipa);
 
 	if (priv_exists != is_priv_gfn) {
-		kvm_prepare_memory_fault_exit(vcpu,
-					      gpa,
-					      PAGE_SIZE,
-					      kvm_is_write_fault(vcpu),
-					      false, is_priv_gfn);
+		kvm_prepare_memory_fault_exit(vcpu, gpa, PAGE_SIZE,
+					      kvm_is_write_fault(vcpu), false,
+					      is_priv_gfn);
 
 		return -EFAULT;
 	}
@@ -1497,8 +1493,8 @@ static int private_memslot_fault(struct kvm_vcpu *vcpu,
 		return -EINVAL;
 	}
 
-	ret = kvm_mmu_topup_memory_cache(memcache,
-					 kvm_mmu_cache_min_pages(vcpu->arch.hw_mmu));
+	ret = kvm_mmu_topup_memory_cache(
+		memcache, kvm_mmu_cache_min_pages(vcpu->arch.hw_mmu));
 	if (ret)
 		return ret;
 
@@ -1564,8 +1560,8 @@ static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 	 * and a write fault needs to collapse a block entry into a table.
 	 */
 	if (!fault_is_perm || (logging_active && write_fault)) {
-		ret = kvm_mmu_topup_memory_cache(memcache,
-						 kvm_mmu_cache_min_pages(vcpu->arch.hw_mmu));
+		ret = kvm_mmu_topup_memory_cache(
+			memcache, kvm_mmu_cache_min_pages(vcpu->arch.hw_mmu));
 		if (ret)
 			return ret;
 	}
@@ -1742,13 +1738,13 @@ static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 	 * backed by a THP and thus use block mapping if possible.
 	 */
 	/* FIXME: We shouldn't need to disable this for realms */
-	if (vma_pagesize == PAGE_SIZE && !(force_pte || device || kvm_is_realm(kvm))) {
+	if (vma_pagesize == PAGE_SIZE &&
+	    !(force_pte || device || kvm_is_realm(kvm))) {
 		if (fault_is_perm && fault_granule > PAGE_SIZE)
 			vma_pagesize = fault_granule;
 		else
-			vma_pagesize = transparent_hugepage_adjust(kvm, memslot,
-								   hva, &pfn,
-								   &fault_ipa);
+			vma_pagesize = transparent_hugepage_adjust(
+				kvm, memslot, hva, &pfn, &fault_ipa);
 
 		if (vma_pagesize < 0) {
 			ret = vma_pagesize;
@@ -1795,14 +1791,13 @@ static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 		prot &= ~KVM_NV_GUEST_MAP_SZ;
 		ret = kvm_pgtable_stage2_relax_perms(pgt, fault_ipa, prot);
 	} else if (kvm_is_realm(kvm)) {
-		ret = realm_map_ipa(kvm, fault_ipa, pfn, vma_pagesize,
-				    prot, memcache);
+		ret = realm_map_ipa(kvm, fault_ipa, pfn, vma_pagesize, prot,
+				    memcache);
 	} else {
 		ret = kvm_pgtable_stage2_map(pgt, fault_ipa, vma_pagesize,
-					     __pfn_to_phys(pfn), prot,
-					     memcache,
+					     __pfn_to_phys(pfn), prot, memcache,
 					     KVM_PGTABLE_WALK_HANDLE_FAULT |
-					     KVM_PGTABLE_WALK_SHARED);
+						     KVM_PGTABLE_WALK_SHARED);
 	}
 
 out_unlock:
@@ -1923,7 +1918,7 @@ int kvm_handle_guest_abort(struct kvm_vcpu *vcpu)
 	 * nothing to walk and we treat it as a 1:1 before going through the
 	 * canonical translation.
 	 */
-	if (kvm_is_nested_s2_mmu(vcpu->kvm,vcpu->arch.hw_mmu) &&
+	if (kvm_is_nested_s2_mmu(vcpu->kvm, vcpu->arch.hw_mmu) &&
 	    vcpu->arch.hw_mmu->nested_stage2_enabled) {
 		u32 esr;
 
@@ -2031,8 +2026,7 @@ bool kvm_unmap_gfn_range(struct kvm *kvm, struct kvm_gfn_range *range)
 
 	__unmap_stage2_range(&kvm->arch.mmu, range->start << PAGE_SHIFT,
 			     (range->end - range->start) << PAGE_SHIFT,
-			     range->may_block,
-			     range->only_shared);
+			     range->may_block, range->only_shared);
 
 	kvm_nested_s2_unmap(kvm, range->may_block);
 	return false;
@@ -2049,9 +2043,8 @@ bool kvm_age_gfn(struct kvm *kvm, struct kvm_gfn_range *range)
 	if (kvm_is_realm(kvm))
 		return true;
 
-	return kvm_pgtable_stage2_test_clear_young(kvm->arch.mmu.pgt,
-						   range->start << PAGE_SHIFT,
-						   size, true);
+	return kvm_pgtable_stage2_test_clear_young(
+		kvm->arch.mmu.pgt, range->start << PAGE_SHIFT, size, true);
 	/*
 	 * TODO: Handle nested_mmu structures here using the reverse mapping in
 	 * a later version of patch series.
@@ -2069,9 +2062,8 @@ bool kvm_test_age_gfn(struct kvm *kvm, struct kvm_gfn_range *range)
 	if (kvm_is_realm(kvm))
 		return true;
 
-	return kvm_pgtable_stage2_test_clear_young(kvm->arch.mmu.pgt,
-						   range->start << PAGE_SHIFT,
-						   size, false);
+	return kvm_pgtable_stage2_test_clear_young(
+		kvm->arch.mmu.pgt, range->start << PAGE_SHIFT, size, false);
 }
 
 phys_addr_t kvm_mmu_get_httbr(void)
@@ -2090,8 +2082,8 @@ static int kvm_map_idmap_text(void)
 	int err = __create_hyp_mappings(hyp_idmap_start, size, hyp_idmap_start,
 					PAGE_HYP_EXEC);
 	if (err)
-		kvm_err("Failed to idmap %lx-%lx\n",
-			hyp_idmap_start, hyp_idmap_end);
+		kvm_err("Failed to idmap %lx-%lx\n", hyp_idmap_start,
+			hyp_idmap_end);
 
 	return err;
 }
@@ -2102,11 +2094,11 @@ static void *kvm_hyp_zalloc_page(void *arg)
 }
 
 static struct kvm_pgtable_mm_ops kvm_hyp_mm_ops = {
-	.zalloc_page		= kvm_hyp_zalloc_page,
-	.get_page		= kvm_host_get_page,
-	.put_page		= kvm_host_put_page,
-	.phys_to_virt		= kvm_host_va,
-	.virt_to_phys		= kvm_host_pa,
+	.zalloc_page = kvm_hyp_zalloc_page,
+	.get_page = kvm_host_get_page,
+	.put_page = kvm_host_put_page,
+	.phys_to_virt = kvm_host_va,
+	.virt_to_phys = kvm_host_pa,
 };
 
 int __init kvm_mmu_init(u32 *hyp_va_bits)
@@ -2147,12 +2139,11 @@ int __init kvm_mmu_init(u32 *hyp_va_bits)
 
 	kvm_debug("Using %u-bit virtual addresses at EL2\n", *hyp_va_bits);
 	kvm_debug("IDMAP page: %lx\n", hyp_idmap_start);
-	kvm_debug("HYP VA range: %lx:%lx\n",
-		  kern_hyp_va(PAGE_OFFSET),
+	kvm_debug("HYP VA range: %lx:%lx\n", kern_hyp_va(PAGE_OFFSET),
 		  kern_hyp_va((unsigned long)high_memory - 1));
 
 	if (hyp_idmap_start >= kern_hyp_va(PAGE_OFFSET) &&
-	    hyp_idmap_start <  kern_hyp_va((unsigned long)high_memory - 1) &&
+	    hyp_idmap_start < kern_hyp_va((unsigned long)high_memory - 1) &&
 	    hyp_idmap_start != (unsigned long)__hyp_idmap_text_start) {
 		/*
 		 * The idmap page is intersecting with the VA space,
@@ -2190,8 +2181,7 @@ out:
 	return err;
 }
 
-void kvm_arch_commit_memory_region(struct kvm *kvm,
-				   struct kvm_memory_slot *old,
+void kvm_arch_commit_memory_region(struct kvm *kvm, struct kvm_memory_slot *old,
 				   const struct kvm_memory_slot *new,
 				   enum kvm_mr_change change)
 {
@@ -2203,7 +2193,6 @@ void kvm_arch_commit_memory_region(struct kvm *kvm,
 	 * memory slot is write protected.
 	 */
 	if (log_dirty_pages) {
-
 		if (change == KVM_MR_DELETE)
 			return;
 
@@ -2243,14 +2232,15 @@ int kvm_arch_prepare_memory_region(struct kvm *kvm,
 	int ret = 0;
 
 	if (change != KVM_MR_CREATE && change != KVM_MR_MOVE &&
-			change != KVM_MR_FLAGS_ONLY)
+	    change != KVM_MR_FLAGS_ONLY)
 		return 0;
 
 	/*
 	 * Prevent userspace from creating a memory region outside of the IPA
 	 * space addressable by the KVM guest IPA space.
 	 */
-	if ((new->base_gfn + new->npages) > (kvm_phys_size(&kvm->arch.mmu) >> PAGE_SHIFT))
+	if ((new->base_gfn + new->npages) >
+	    (kvm_phys_size(&kvm->arch.mmu) >> PAGE_SHIFT))
 		return -EFAULT;
 
 	hva = new->userspace_addr;
@@ -2402,4 +2392,45 @@ void kvm_toggle_cache(struct kvm_vcpu *vcpu, bool was_enabled)
 		*vcpu_hcr(vcpu) &= ~HCR_TVM;
 
 	trace_kvm_toggle_cache(*vcpu_pc(vcpu), was_enabled, now_enabled);
+}
+
+int kvm_set_mmio_region(struct kvm *kvm, struct kvm_mmio_region *mmio_region)
+{
+	struct kvm_s2_mmu *mmu = &kvm->arch.mmu;
+	struct kvm_pgtable *pgt = mmu->pgt;
+	if (!pgt)
+		return -ENOENT;
+	enum kvm_pgtable_prot prot = KVM_PGTABLE_PROT_R | KVM_PGTABLE_PROT_W |
+				     KVM_PGTABLE_PROT_DEVICE;
+	u64 addr = mmio_region->guest_phys_addr;
+	u64 size = mmio_region->memory_size;
+	u64 chunk_size = PAGE_SIZE * 512;
+	u64 offset = 0;
+	int ret;
+	int chunk = 0;
+	pr_info("[MZH] Mapping MMIO in chunks: addr=%llx size=%llx chunk=%llx",
+		addr, size, chunk_size);
+	struct kvm_mmu_memory_cache cache = { .gfp_zero = __GFP_ZERO };
+	ret = kvm_mmu_topup_memory_cache(&cache, 5);
+	if (ret)
+		return ret;
+	while (offset < size) {
+		u64 cur_size = min(chunk_size, size - offset);
+		u64 cur_addr = addr + offset;
+		u64 cur_phys = cur_addr; // identity
+
+		ret = kvm_pgtable_stage2_map(pgt, cur_addr, cur_size, cur_phys,
+					     prot, &cache, 0);
+		if (ret) {
+			pr_err("[MZH] Chunk map failed at offset %llx: %d",
+			       offset, ret);
+			return ret;
+		}
+		pr_info("[MZH] Mapping MMIO success: cur_addr=%llx\tcur_chunk=%d",
+			cur_addr, chunk);
+		offset += cur_size;
+		chunk += 1;
+	}
+	kvm_flush_remote_tlbs(kvm);
+	return 0;
 }

@@ -1,3 +1,2 @@
-make -j16
-
-cp ./arch/arm64/boot/Image ../GPU_SFTP/linux-host-kernel/
+make CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm64 -j16
+cp -v ~/cca/gpu/Linux-Host-GPU/arch/arm64/boot/Image ~/cca/gpu/GPU_SFTP/linux-host-kernel/

@@ -100,8 +100,8 @@ alternative_cb_end
 #include <asm/kvm_host.h>
 #include <asm/kvm_nested.h>
 
-void kvm_update_va_mask(struct alt_instr *alt,
-			__le32 *origptr, __le32 *updptr, int nr_inst);
+void kvm_update_va_mask(struct alt_instr *alt, __le32 *origptr, __le32 *updptr,
+			int nr_inst);
 void kvm_compute_layout(void);
 void kvm_apply_hyp_relocations(void);
 
@@ -125,29 +125,30 @@ static __always_inline unsigned long __kern_hyp_va(unsigned long v)
  * replace the instructions with `nop`s.
  */
 #ifndef __KVM_VHE_HYPERVISOR__
-	asm volatile(ALTERNATIVE_CB("and %0, %0, #1\n"         /* mask with va_mask */
-				    "ror %0, %0, #1\n"         /* rotate to the first tag bit */
-				    "add %0, %0, #0\n"         /* insert the low 12 bits of the tag */
-				    "add %0, %0, #0, lsl 12\n" /* insert the top 12 bits of the tag */
-				    "ror %0, %0, #63\n",       /* rotate back */
-				    ARM64_ALWAYS_SYSTEM,
-				    kvm_update_va_mask)
-		     : "+r" (v));
+	asm volatile(
+		ALTERNATIVE_CB(
+			"and %0, %0, #1\n" /* mask with va_mask */
+			"ror %0, %0, #1\n" /* rotate to the first tag bit */
+			"add %0, %0, #0\n" /* insert the low 12 bits of the tag */
+			"add %0, %0, #0, lsl 12\n" /* insert the top 12 bits of the tag */
+			"ror %0, %0, #63\n", /* rotate back */
+			ARM64_ALWAYS_SYSTEM, kvm_update_va_mask)
+		: "+r"(v));
 #endif
 	return v;
 }
 
-#define kern_hyp_va(v) 	((typeof(v))(__kern_hyp_va((unsigned long)(v))))
+#define kern_hyp_va(v) ((typeof(v))(__kern_hyp_va((unsigned long)(v))))
 
 /*
  * We currently support using a VM-specified IPA size. For backward
  * compatibility, the default IPA size is fixed to 40bits.
  */
-#define KVM_PHYS_SHIFT	(40)
+#define KVM_PHYS_SHIFT (40)
 
-#define kvm_phys_shift(mmu)		VTCR_EL2_IPA((mmu)->vtcr)
-#define kvm_phys_size(mmu)		(_AC(1, ULL) << kvm_phys_shift(mmu))
-#define kvm_phys_mask(mmu)		(kvm_phys_size(mmu) - _AC(1, ULL))
+#define kvm_phys_shift(mmu) VTCR_EL2_IPA((mmu)->vtcr)
+#define kvm_phys_size(mmu) (_AC(1, ULL) << kvm_phys_shift(mmu))
+#define kvm_phys_mask(mmu) (kvm_phys_size(mmu) - _AC(1, ULL))
 
 #include <asm/kvm_pgtable.h>
 #include <asm/stage2_pgtable.h>
@@ -159,20 +160,21 @@ int __create_hyp_mappings(unsigned long start, unsigned long size,
 			  unsigned long phys, enum kvm_pgtable_prot prot);
 int hyp_alloc_private_va_range(size_t size, unsigned long *haddr);
 int create_hyp_io_mappings(phys_addr_t phys_addr, size_t size,
-			   void __iomem **kaddr,
-			   void __iomem **haddr);
-int create_hyp_exec_mappings(phys_addr_t phys_addr, size_t size,
-			     void **haddr);
+			   void __iomem **kaddr, void __iomem **haddr);
+int create_hyp_exec_mappings(phys_addr_t phys_addr, size_t size, void **haddr);
 int create_hyp_stack(phys_addr_t phys_addr, unsigned long *haddr);
 void __init free_hyp_pgds(void);
 
-void kvm_stage2_unmap_range(struct kvm_s2_mmu *mmu, phys_addr_t start,
-			    u64 size, bool may_block);
-void kvm_stage2_flush_range(struct kvm_s2_mmu *mmu, phys_addr_t addr, phys_addr_t end);
-void kvm_stage2_wp_range(struct kvm_s2_mmu *mmu, phys_addr_t addr, phys_addr_t end);
+void kvm_stage2_unmap_range(struct kvm_s2_mmu *mmu, phys_addr_t start, u64 size,
+			    bool may_block);
+void kvm_stage2_flush_range(struct kvm_s2_mmu *mmu, phys_addr_t addr,
+			    phys_addr_t end);
+void kvm_stage2_wp_range(struct kvm_s2_mmu *mmu, phys_addr_t addr,
+			 phys_addr_t end);
 
 void stage2_unmap_vm(struct kvm *kvm);
-int kvm_init_stage2_mmu(struct kvm *kvm, struct kvm_s2_mmu *mmu, unsigned long type);
+int kvm_init_stage2_mmu(struct kvm *kvm, struct kvm_s2_mmu *mmu,
+			unsigned long type);
 void kvm_uninit_stage2_mmu(struct kvm *kvm);
 void kvm_free_stage2_pgd(struct kvm_s2_mmu *mmu);
 int kvm_phys_addr_ioremap(struct kvm *kvm, phys_addr_t guest_ipa,
@@ -194,8 +196,8 @@ static inline void *__kvm_vector_slot2addr(void *base,
 
 struct kvm;
 
-#define kvm_flush_dcache_to_poc(a,l)	\
-	dcache_clean_inval_poc((unsigned long)(a), (unsigned long)(a)+(l))
+#define kvm_flush_dcache_to_poc(a, l) \
+	dcache_clean_inval_poc((unsigned long)(a), (unsigned long)(a) + (l))
 
 static inline bool vcpu_has_cache_enabled(struct kvm_vcpu *vcpu)
 {
@@ -235,7 +237,7 @@ static inline size_t __invalidate_icache_max_range(void)
 				    "movk %0, #0, lsl #48\n",
 				    ARM64_ALWAYS_SYSTEM,
 				    kvm_compute_final_ctr_el0)
-		     : "=r" (ctr));
+		     : "=r"(ctr));
 
 	iminline = SYS_FIELD_GET(CTR_EL0, IminLine, ctr) + 2;
 	return MAX_DVM_OPS << iminline;
@@ -253,10 +255,9 @@ static inline void __invalidate_icache_guest_page(void *va, size_t size)
 	else
 		icache_inval_pou((unsigned long)va, (unsigned long)va + size);
 }
-
+int kvm_set_mmio_region(struct kvm *kvm, struct kvm_mmio_region *mmio_region);
 void kvm_set_way_flush(struct kvm_vcpu *vcpu);
 void kvm_toggle_cache(struct kvm_vcpu *vcpu, bool was_enabled);
-
 static inline unsigned int kvm_get_vmid_bits(void)
 {
 	int reg = read_sanitised_ftr_reg(SYS_ID_AA64MMFR1_EL1);
@@ -269,8 +270,8 @@ static inline unsigned int kvm_get_vmid_bits(void)
  * the SRCU read lock here. Since we copy the data from the user page, we
  * can immediately drop the lock again.
  */
-static inline int kvm_read_guest_lock(struct kvm *kvm,
-				      gpa_t gpa, void *data, unsigned long len)
+static inline int kvm_read_guest_lock(struct kvm *kvm, gpa_t gpa, void *data,
+				      unsigned long len)
 {
 	int srcu_idx = srcu_read_lock(&kvm->srcu);
 	int ret = kvm_read_guest(kvm, gpa, data, len);
@@ -291,7 +292,7 @@ static inline int kvm_write_guest_lock(struct kvm *kvm, gpa_t gpa,
 	return ret;
 }
 
-#define kvm_phys_to_vttbr(addr)		phys_to_ttbr(addr)
+#define kvm_phys_to_vttbr(addr) phys_to_ttbr(addr)
 
 /*
  * When this is (directly or indirectly) used on the TLB invalidation
@@ -336,7 +337,7 @@ static inline struct kvm *kvm_s2_mmu_to_kvm(struct kvm_s2_mmu *mmu)
 static inline u64 get_vmid(u64 vttbr)
 {
 	return (vttbr & VTTBR_VMID_MASK(kvm_get_vmid_bits())) >>
-		VTTBR_VMID_SHIFT;
+	       VTTBR_VMID_SHIFT;
 }
 
 static inline bool kvm_s2_mmu_valid(struct kvm_s2_mmu *mmu)
@@ -356,7 +357,9 @@ static inline bool kvm_is_nested_s2_mmu(struct kvm *kvm, struct kvm_s2_mmu *mmu)
 #ifdef CONFIG_PTDUMP_STAGE2_DEBUGFS
 void kvm_s2_ptdump_create_debugfs(struct kvm *kvm);
 #else
-static inline void kvm_s2_ptdump_create_debugfs(struct kvm *kvm) {}
+static inline void kvm_s2_ptdump_create_debugfs(struct kvm *kvm)
+{
+}
 #endif /* CONFIG_PTDUMP_STAGE2_DEBUGFS */
 
 #endif /* __ASSEMBLY__ */
