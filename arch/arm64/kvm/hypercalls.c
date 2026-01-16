@@ -9,11 +9,11 @@
 #include <kvm/arm_hypercalls.h>
 #include <kvm/arm_psci.h>
 
-#define KVM_ARM_SMCCC_STD_FEATURES				\
+#define KVM_ARM_SMCCC_STD_FEATURES \
 	GENMASK(KVM_REG_ARM_STD_BMAP_BIT_COUNT - 1, 0)
-#define KVM_ARM_SMCCC_STD_HYP_FEATURES				\
+#define KVM_ARM_SMCCC_STD_HYP_FEATURES \
 	GENMASK(KVM_REG_ARM_STD_HYP_BMAP_BIT_COUNT - 1, 0)
-#define KVM_ARM_SMCCC_VENDOR_HYP_FEATURES			\
+#define KVM_ARM_SMCCC_VENDOR_HYP_FEATURES \
 	GENMASK(KVM_REG_ARM_VENDOR_HYP_BMAP_BIT_COUNT - 1, 0)
 
 static void kvm_ptp_get_time(struct kvm_vcpu *vcpu, u64 *val)
@@ -44,10 +44,12 @@ static void kvm_ptp_get_time(struct kvm_vcpu *vcpu, u64 *val)
 	feature = smccc_get_arg1(vcpu);
 	switch (feature) {
 	case KVM_PTP_VIRT_COUNTER:
-		cycles = systime_snapshot.cycles - vcpu->kvm->arch.timer_data.voffset;
+		cycles = systime_snapshot.cycles -
+			 vcpu->kvm->arch.timer_data.voffset;
 		break;
 	case KVM_PTP_PHYS_COUNTER:
-		cycles = systime_snapshot.cycles - vcpu->kvm->arch.timer_data.poffset;
+		cycles = systime_snapshot.cycles -
+			 vcpu->kvm->arch.timer_data.poffset;
 		break;
 	default:
 		return;
@@ -116,22 +118,24 @@ static bool kvm_smccc_test_fw_bmap(struct kvm_vcpu *vcpu, u32 func_id)
 	case ARM_SMCCC_VENDOR_HYP_KVM_PTP_FUNC_ID:
 		return test_bit(KVM_REG_ARM_VENDOR_HYP_BIT_PTP,
 				&smccc_feat->vendor_hyp_bmap);
+	case ARM_SMCCC_VENDOR_HYP_GPA_TO_HPA_FUNC_ID:
+		return test_bit(KVM_REG_ARM_VENDOR_HYP_BIT_GPA_TO_HPA,
+				&smccc_feat->vendor_hyp_bmap);
 	default:
 		return false;
 	}
 }
 
-#define SMC32_ARCH_RANGE_BEGIN	ARM_SMCCC_VERSION_FUNC_ID
-#define SMC32_ARCH_RANGE_END	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,		\
-						   ARM_SMCCC_SMC_32,		\
-						   0, ARM_SMCCC_FUNC_MASK)
+#define SMC32_ARCH_RANGE_BEGIN ARM_SMCCC_VERSION_FUNC_ID
+#define SMC32_ARCH_RANGE_END                                         \
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, ARM_SMCCC_SMC_32, 0, \
+			   ARM_SMCCC_FUNC_MASK)
 
-#define SMC64_ARCH_RANGE_BEGIN	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,		\
-						   ARM_SMCCC_SMC_64,		\
-						   0, 0)
-#define SMC64_ARCH_RANGE_END	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,		\
-						   ARM_SMCCC_SMC_64,		\
-						   0, ARM_SMCCC_FUNC_MASK)
+#define SMC64_ARCH_RANGE_BEGIN \
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, ARM_SMCCC_SMC_64, 0, 0)
+#define SMC64_ARCH_RANGE_END                                         \
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, ARM_SMCCC_SMC_64, 0, \
+			   ARM_SMCCC_FUNC_MASK)
 
 static int kvm_smccc_filter_insert_reserved(struct kvm *kvm)
 {
@@ -142,15 +146,15 @@ static int kvm_smccc_filter_insert_reserved(struct kvm *kvm)
 	 * range, avoiding the risk of misrepresenting Spectre mitigation status
 	 * to the guest.
 	 */
-	r = mtree_insert_range(&kvm->arch.smccc_filter,
-			       SMC32_ARCH_RANGE_BEGIN, SMC32_ARCH_RANGE_END,
+	r = mtree_insert_range(&kvm->arch.smccc_filter, SMC32_ARCH_RANGE_BEGIN,
+			       SMC32_ARCH_RANGE_END,
 			       xa_mk_value(KVM_SMCCC_FILTER_HANDLE),
 			       GFP_KERNEL_ACCOUNT);
 	if (r)
 		goto out_destroy;
 
-	r = mtree_insert_range(&kvm->arch.smccc_filter,
-			       SMC64_ARCH_RANGE_BEGIN, SMC64_ARCH_RANGE_END,
+	r = mtree_insert_range(&kvm->arch.smccc_filter, SMC64_ARCH_RANGE_BEGIN,
+			       SMC64_ARCH_RANGE_END,
 			       xa_mk_value(KVM_SMCCC_FILTER_HANDLE),
 			       GFP_KERNEL_ACCOUNT);
 	if (r)
@@ -167,7 +171,8 @@ static bool kvm_smccc_filter_configured(struct kvm *kvm)
 	return !mtree_empty(&kvm->arch.smccc_filter);
 }
 
-static int kvm_smccc_set_filter(struct kvm *kvm, struct kvm_smccc_filter __user *uaddr)
+static int kvm_smccc_set_filter(struct kvm *kvm,
+				struct kvm_smccc_filter __user *uaddr)
 {
 	const void *zero_page = page_to_virt(ZERO_PAGE(0));
 	struct kvm_smccc_filter filter;
@@ -254,17 +259,22 @@ static void kvm_prepare_hypercall_exit(struct kvm_vcpu *vcpu, u32 func_id)
 		flags |= KVM_HYPERCALL_EXIT_16BIT;
 
 	run->exit_reason = KVM_EXIT_HYPERCALL;
-	run->hypercall = (typeof(run->hypercall)) {
-		.nr	= func_id,
-		.flags	= flags,
+	run->hypercall = (typeof(run->hypercall)){
+		.nr = func_id,
+		.flags = flags,
 	};
+}
+static void kvm_gpa_to_hpa(struct kvm_vcpu *vcpu, u64 *val)
+{
+	pr_info("[MZH] kvm_gpa_to_hpa called");
+	return;
 }
 
 int kvm_smccc_call_handler(struct kvm_vcpu *vcpu)
 {
 	struct kvm_smccc_features *smccc_feat = &vcpu->kvm->arch.smccc_feat;
 	u32 func_id = smccc_get_function(vcpu);
-	u64 val[4] = {SMCCC_RET_NOT_SUPPORTED};
+	u64 val[4] = { SMCCC_RET_NOT_SUPPORTED };
 	u32 feature;
 	u8 action;
 	gpa_t gpa;
@@ -279,7 +289,8 @@ int kvm_smccc_call_handler(struct kvm_vcpu *vcpu)
 		kvm_prepare_hypercall_exit(vcpu, func_id);
 		return 0;
 	default:
-		WARN_RATELIMIT(1, "Unhandled SMCCC filter action: %d\n", action);
+		WARN_RATELIMIT(1, "Unhandled SMCCC filter action: %d\n",
+			       action);
 		goto out;
 	}
 
@@ -317,7 +328,8 @@ int kvm_smccc_call_handler(struct kvm_vcpu *vcpu)
 				 * to the guest, and hide SSBS so that the
 				 * guest stays protected.
 				 */
-				if (kvm_has_feat(vcpu->kvm, ID_AA64PFR1_EL1, SSBS, IMP))
+				if (kvm_has_feat(vcpu->kvm, ID_AA64PFR1_EL1,
+						 SSBS, IMP))
 					break;
 				fallthrough;
 			case SPECTRE_UNAFFECTED:
@@ -363,6 +375,9 @@ int kvm_smccc_call_handler(struct kvm_vcpu *vcpu)
 		break;
 	case ARM_SMCCC_VENDOR_HYP_KVM_PTP_FUNC_ID:
 		kvm_ptp_get_time(vcpu, val);
+		break;
+	case ARM_SMCCC_VENDOR_HYP_GPA_TO_HPA_FUNC_ID:
+		kvm_gpa_to_hpa(vcpu, val);
 		break;
 	case ARM_SMCCC_TRNG_VERSION:
 	case ARM_SMCCC_TRNG_FEATURES:
@@ -422,7 +437,7 @@ int kvm_arm_copy_fw_reg_indices(struct kvm_vcpu *vcpu, u64 __user *uindices)
 	return 0;
 }
 
-#define KVM_REG_FEATURE_LEVEL_MASK	GENMASK(3, 0)
+#define KVM_REG_FEATURE_LEVEL_MASK GENMASK(3, 0)
 
 /*
  * Convert the workaround level into an easy-to-compare number, where higher
@@ -486,7 +501,8 @@ int kvm_arm_get_fw_reg(struct kvm_vcpu *vcpu, const struct kvm_one_reg *reg)
 	case KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_1:
 	case KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_2:
 	case KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_3:
-		val = get_kernel_wa_level(vcpu, reg->id) & KVM_REG_FEATURE_LEVEL_MASK;
+		val = get_kernel_wa_level(vcpu, reg->id) &
+		      KVM_REG_FEATURE_LEVEL_MASK;
 		break;
 	case KVM_REG_ARM_STD_BMAP:
 		val = READ_ONCE(smccc_feat->std_bmap);
@@ -560,8 +576,7 @@ int kvm_arm_set_fw_reg(struct kvm_vcpu *vcpu, const struct kvm_one_reg *reg)
 		return -EFAULT;
 
 	switch (reg->id) {
-	case KVM_REG_ARM_PSCI_VERSION:
-	{
+	case KVM_REG_ARM_PSCI_VERSION: {
 		bool wants_02;
 
 		wants_02 = vcpu_has_feature(vcpu, KVM_ARM_VCPU_PSCI_0_2);
@@ -600,7 +615,8 @@ int kvm_arm_set_fw_reg(struct kvm_vcpu *vcpu, const struct kvm_one_reg *reg)
 
 		/* The enabled bit must not be set unless the level is AVAIL. */
 		if ((val & KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_2_ENABLED) &&
-		    (val & KVM_REG_FEATURE_LEVEL_MASK) != KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_2_AVAIL)
+		    (val & KVM_REG_FEATURE_LEVEL_MASK) !=
+			    KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_2_AVAIL)
 			return -EINVAL;
 
 		/*
@@ -610,11 +626,13 @@ int kvm_arm_set_fw_reg(struct kvm_vcpu *vcpu, const struct kvm_one_reg *reg)
 		switch (val & KVM_REG_FEATURE_LEVEL_MASK) {
 		case KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_2_NOT_AVAIL:
 		case KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_2_UNKNOWN:
-			wa_level = KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_2_NOT_AVAIL;
+			wa_level =
+				KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_2_NOT_AVAIL;
 			break;
 		case KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_2_AVAIL:
 		case KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_2_NOT_REQUIRED:
-			wa_level = KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_2_NOT_REQUIRED;
+			wa_level =
+				KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_2_NOT_REQUIRED;
 			break;
 		default:
 			return -EINVAL;
