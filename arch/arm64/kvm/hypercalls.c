@@ -98,7 +98,7 @@ static bool kvm_smccc_default_allowed(u32 func_id)
 static bool kvm_smccc_test_fw_bmap(struct kvm_vcpu *vcpu, u32 func_id)
 {
 	struct kvm_smccc_features *smccc_feat = &vcpu->kvm->arch.smccc_feat;
-
+	//pr_info("[MZH] func_id:%d", func_id);
 	switch (func_id) {
 	case ARM_SMCCC_TRNG_VERSION:
 	case ARM_SMCCC_TRNG_FEATURES:
@@ -264,10 +264,53 @@ static void kvm_prepare_hypercall_exit(struct kvm_vcpu *vcpu, u32 func_id)
 		.flags = flags,
 	};
 }
+//TODO gfn_to_pfn() case pfn ref+1, need to kvm_release_pfn_clean(pfn)
 static void kvm_gpa_to_hpa(struct kvm_vcpu *vcpu, u64 *val)
 {
-	pr_info("[MZH] kvm_gpa_to_hpa called");
-	return;
+	struct kvm *kvm = vcpu->kvm; // 修正 1: 定义 kvm 变量
+	phys_addr_t gpa_array_gpa = smccc_get_arg1(vcpu);
+	u64 count = smccc_get_arg2(vcpu);
+	u64 i;
+
+	pr_info("[MZH] kvm_gpa_to_hpa called: array_gpa=0x%llx, count=%llu\n",
+		gpa_array_gpa, count);
+
+	if (count == 0 || count > 512 || (gpa_array_gpa & 0x7)) {
+		val[0] = SMCCC_RET_INVALID_PARAMETER;
+		return;
+	}
+	for (i = 0; i < count; i++) {
+		u64 current_gpa;
+		u64 hpa;
+		kvm_pfn_t pfn;
+		bool writable;
+		phys_addr_t element_gpa = gpa_array_gpa + (i * sizeof(u64));
+		if (kvm_read_guest(kvm, element_gpa, &current_gpa,
+				   sizeof(u64))) {
+			val[0] = SMCCC_RET_INVALID_PARAMETER;
+			return;
+		}
+		pfn = gfn_to_pfn_prot(kvm, (gfn_t)(current_gpa >> PAGE_SHIFT),
+				      true, &writable);
+		if (is_error_noslot_pfn(pfn)) {
+			pr_err("[MZH] Failed to find PFN for GPA 0x%llx\n",
+			       current_gpa);
+			val[0] = SMCCC_RET_INVALID_PARAMETER;
+			return;
+		}
+		hpa = PFN_PHYS(pfn) | (current_gpa & PAGE_MASK);
+
+		if (kvm_write_guest(kvm, element_gpa, &hpa, sizeof(u64))) {
+			kvm_release_pfn_clean(pfn);
+			pr_err("[MZH] Failed to write HPA 0x%pa to GPA 0x%llx\n",
+			       &hpa, element_gpa);
+			val[0] = SMCCC_RET_INVALID_PARAMETER;
+			return;
+		}
+		kvm_release_pfn_clean(pfn);
+	}
+
+	val[0] = SMCCC_RET_SUCCESS;
 }
 
 int kvm_smccc_call_handler(struct kvm_vcpu *vcpu)

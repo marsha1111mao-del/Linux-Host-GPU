@@ -11,16 +11,6 @@
 #include "pmthor_drv.h"
 #include "pmthor_regs.h"
 
-static void pmthor_gpu_id_check(struct pmthor_device *ptdev)
-{
-	u32 id1, id2;
-
-	id1 = gpu_read(ptdev, GPU_ID);
-	id2 = gpu_read(ptdev, GPU_ID);
-
-	dev_info(ptdev->dev, "GPU_ID = 0x%08x (stable=%s)\n", id1,
-		 (id1 == id2) ? "yes" : "NO");
-}
 int pmthor_pm_init(struct pmthor_device *ptdev)
 {
 	int ret = 0;
@@ -29,10 +19,10 @@ int pmthor_pm_init(struct pmthor_device *ptdev)
 	ret = dev_pm_domain_attach(ptdev->dev, true);
 	if (ret)
 		return ret;
+	// 运行时电源管理，暂不打开
 	// ret = devm_pm_runtime_enable(ptdev->dev);
 	// if (ret)
 	// 	return ret;
-
 	// ret = pm_runtime_resume_and_get(ptdev->dev);
 	return ret;
 }
@@ -83,7 +73,6 @@ int pmthor_device_init(struct pmthor_device *ptdev)
 	if (IS_ERR(ptdev->iomem))
 		return PTR_ERR(ptdev->iomem);
 	ptdev->phys_addr = res->start;
-	pmthor_gpu_id_check(ptdev);
 	return 0;
 }
 static int pmthor_probe(struct platform_device *pdev)
