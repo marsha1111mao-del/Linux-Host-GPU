@@ -1,50 +1,65 @@
+#ifndef __PMTHOR_DRV_H__
+#define __PMTHOR_DRV_H__
+
+#include <linux/types.h>
+#include <linux/device.h>
+#include <linux/eventfd.h>
+#include <linux/vfio.h>
+#include <linux/miscdevice.h>
+#include <linux/spinlock.h>
+#include <linux/mutex.h>
+
 #define DRV_NAME "pmthor"
+
+/* 前向声明内核结构体指针 */
+struct virqfd;
+
+/* 中断上下文结构 */
+struct pmthor_irq {
+	u32 flags;
+	int irq;
+	int hwintid;
+	char *name;
+	spinlock_t lock;
+	bool masked;
+
+	struct eventfd_ctx *trigger;
+	struct virqfd *mask;
+	struct virqfd *unmask;
+};
+
+/* 设备结构 */
 struct pmthor_device {
 	struct device *dev;
+	struct miscdevice miscdev; /* 必须包含这个，用于 container_of */
 
-	/** @phys_addr: Physical address of the iomem region. */
 	phys_addr_t phys_addr;
-
-	/** @iomem: CPU mapping of the IOMEM region. */
 	void __iomem *iomem;
-	/** @coherent: True if the CPU/GPU are memory coherent. */
 	bool coherent;
 
-	/** @clks: GPU clocks. */
 	struct {
-		/** @core: Core clock. */
 		struct clk *core;
-
-		/** @stacks: Stacks clock. This clock is optional. */
 		struct clk *stacks;
-
-		/** @coregroup: Core group clock. This clock is optional. */
 		struct clk *coregroup;
 	} clks;
-	/** @pm: Power management related data. */
+
 	struct {
-		/** @state: Power state. */
 		atomic_t state;
-
-		/**
-		 * @mmio_lock: Lock protecting MMIO userspace CPU mappings.
-		 *
-		 * This is needed to ensure we map the dummy IO pages when
-		 * the device is being suspended, and the real IO pages when
-		 * the device is being resumed. We can't just do with the
-		 * state atomicity to deal with this race.
-		 */
 		struct mutex mmio_lock;
-
-		/**
-		 * @dummy_latest_flush: Dummy LATEST_FLUSH page.
-		 *
-		 * Used to replace the real LATEST_FLUSH page when the GPU
-		 * is suspended.
-		 */
 		struct page *dummy_latest_flush;
 	} pm;
+
+	struct pmthor_irq job_irq;
+	struct pmthor_irq mmu_irq;
+	struct pmthor_irq gpu_irq;
 };
+
+/* 函数声明 */
 int pmthor_clk_init(struct pmthor_device *ptdev);
-int pmthor_device_init(struct pmthor_device *ptdev);
 int pmthor_pm_init(struct pmthor_device *ptdev);
+int pmthor_device_init(struct pmthor_device *ptdev);
+
+/* IOCTL 定义 */
+#define PMTHOR_IOCTL_SET_IRQS _IOW('P', 0x01, struct vfio_irq_set)
+
+#endif /* __PMTHOR_DRV_H__ */

@@ -47,7 +47,7 @@
 #include <kvm/arm_hypercalls.h>
 #include <kvm/arm_pmu.h>
 #include <kvm/arm_psci.h>
-
+#include <kvm/arm_vgic.h>
 #include "sys_regs.h"
 
 static enum kvm_mode kvm_mode = KVM_MODE_DEFAULT;
@@ -195,6 +195,12 @@ int kvm_arch_set_mmio_region(struct kvm *kvm,
 {
 	return kvm_set_mmio_region(kvm, mmio_region);
 }
+
+// int kvm_arch_set_irq_pass(struct kvm *kvm, struct kvm_irq_pass *irq_pass)
+// {
+// 	u32 vintid = irq_pass->guest_irq;
+// 	return kvm_vgic_map_phys_irq_spi(kvm, irq_pass->host_irq, vintid);
+// }
 /**
  * kvm_arch_init_vm - initializes a VM data structure
  * @kvm:	pointer to the KVM struct

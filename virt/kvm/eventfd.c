@@ -32,14 +32,13 @@
 
 static struct workqueue_struct *irqfd_cleanup_wq;
 
-bool __attribute__((weak))
-kvm_arch_irqfd_allowed(struct kvm *kvm, struct kvm_irqfd *args)
+bool __attribute__((weak)) kvm_arch_irqfd_allowed(struct kvm *kvm,
+						  struct kvm_irqfd *args)
 {
 	return true;
 }
 
-static void
-irqfd_inject(struct work_struct *work)
+static void irqfd_inject(struct work_struct *work)
 {
 	struct kvm_kernel_irqfd *irqfd =
 		container_of(work, struct kvm_kernel_irqfd, inject);
@@ -47,12 +46,12 @@ irqfd_inject(struct work_struct *work)
 
 	if (!irqfd->resampler) {
 		kvm_set_irq(kvm, KVM_USERSPACE_IRQ_SOURCE_ID, irqfd->gsi, 1,
-				false);
+			    false);
 		kvm_set_irq(kvm, KVM_USERSPACE_IRQ_SOURCE_ID, irqfd->gsi, 0,
-				false);
+			    false);
 	} else
-		kvm_set_irq(kvm, KVM_IRQFD_RESAMPLE_IRQ_SOURCE_ID,
-			    irqfd->gsi, 1, false);
+		kvm_set_irq(kvm, KVM_IRQFD_RESAMPLE_IRQ_SOURCE_ID, irqfd->gsi,
+			    1, false);
 }
 
 static void irqfd_resampler_notify(struct kvm_kernel_irqfd_resampler *resampler)
@@ -69,15 +68,14 @@ static void irqfd_resampler_notify(struct kvm_kernel_irqfd_resampler *resampler)
  * then notify all of the resampler irqfds using this GSI.  We can't
  * do multiple de-asserts or we risk racing with incoming re-asserts.
  */
-static void
-irqfd_resampler_ack(struct kvm_irq_ack_notifier *kian)
+static void irqfd_resampler_ack(struct kvm_irq_ack_notifier *kian)
 {
 	struct kvm_kernel_irqfd_resampler *resampler;
 	struct kvm *kvm;
 	int idx;
 
-	resampler = container_of(kian,
-			struct kvm_kernel_irqfd_resampler, notifier);
+	resampler =
+		container_of(kian, struct kvm_kernel_irqfd_resampler, notifier);
 	kvm = resampler->kvm;
 
 	kvm_set_irq(kvm, KVM_IRQFD_RESAMPLE_IRQ_SOURCE_ID,
@@ -88,8 +86,7 @@ irqfd_resampler_ack(struct kvm_irq_ack_notifier *kian)
 	srcu_read_unlock(&kvm->irq_srcu, idx);
 }
 
-static void
-irqfd_resampler_shutdown(struct kvm_kernel_irqfd *irqfd)
+static void irqfd_resampler_shutdown(struct kvm_kernel_irqfd *irqfd)
 {
 	struct kvm_kernel_irqfd_resampler *resampler = irqfd->resampler;
 	struct kvm *kvm = resampler->kvm;
@@ -118,8 +115,7 @@ irqfd_resampler_shutdown(struct kvm_kernel_irqfd *irqfd)
 /*
  * Race-free decouple logic (ordering is critical)
  */
-static void
-irqfd_shutdown(struct work_struct *work)
+static void irqfd_shutdown(struct work_struct *work)
 {
 	struct kvm_kernel_irqfd *irqfd =
 		container_of(work, struct kvm_kernel_irqfd, shutdown);
@@ -156,10 +152,8 @@ irqfd_shutdown(struct work_struct *work)
 	kfree(irqfd);
 }
 
-
 /* assumes kvm->irqfds.lock is held */
-static bool
-irqfd_is_active(struct kvm_kernel_irqfd *irqfd)
+static bool irqfd_is_active(struct kvm_kernel_irqfd *irqfd)
 {
 	return list_empty(&irqfd->list) ? false : true;
 }
@@ -169,8 +163,7 @@ irqfd_is_active(struct kvm_kernel_irqfd *irqfd)
  *
  * assumes kvm->irqfds.lock is held
  */
-static void
-irqfd_deactivate(struct kvm_kernel_irqfd *irqfd)
+static void irqfd_deactivate(struct kvm_kernel_irqfd *irqfd)
 {
 	BUG_ON(!irqfd_is_active(irqfd));
 
@@ -179,11 +172,10 @@ irqfd_deactivate(struct kvm_kernel_irqfd *irqfd)
 	queue_work(irqfd_cleanup_wq, &irqfd->shutdown);
 }
 
-int __attribute__((weak)) kvm_arch_set_irq_inatomic(
-				struct kvm_kernel_irq_routing_entry *irq,
-				struct kvm *kvm, int irq_source_id,
-				int level,
-				bool line_status)
+int __attribute__((weak))
+kvm_arch_set_irq_inatomic(struct kvm_kernel_irq_routing_entry *irq,
+			  struct kvm *kvm, int irq_source_id, int level,
+			  bool line_status)
 {
 	return -EWOULDBLOCK;
 }
@@ -191,8 +183,8 @@ int __attribute__((weak)) kvm_arch_set_irq_inatomic(
 /*
  * Called with wqh->lock held and interrupts disabled
  */
-static int
-irqfd_wakeup(wait_queue_entry_t *wait, unsigned mode, int sync, void *key)
+static int irqfd_wakeup(wait_queue_entry_t *wait, unsigned mode, int sync,
+			void *key)
 {
 	struct kvm_kernel_irqfd *irqfd =
 		container_of(wait, struct kvm_kernel_irqfd, wait);
@@ -245,9 +237,8 @@ irqfd_wakeup(wait_queue_entry_t *wait, unsigned mode, int sync, void *key)
 	return ret;
 }
 
-static void
-irqfd_ptable_queue_proc(struct file *file, wait_queue_head_t *wqh,
-			poll_table *pt)
+static void irqfd_ptable_queue_proc(struct file *file, wait_queue_head_t *wqh,
+				    poll_table *pt)
 {
 	struct kvm_kernel_irqfd *irqfd =
 		container_of(pt, struct kvm_kernel_irqfd, pt);
@@ -275,33 +266,33 @@ static void irqfd_update(struct kvm *kvm, struct kvm_kernel_irqfd *irqfd)
 }
 
 #ifdef CONFIG_HAVE_KVM_IRQ_BYPASS
-void __attribute__((weak)) kvm_arch_irq_bypass_stop(
-				struct irq_bypass_consumer *cons)
+void __attribute__((weak))
+kvm_arch_irq_bypass_stop(struct irq_bypass_consumer *cons)
 {
 }
 
-void __attribute__((weak)) kvm_arch_irq_bypass_start(
-				struct irq_bypass_consumer *cons)
+void __attribute__((weak))
+kvm_arch_irq_bypass_start(struct irq_bypass_consumer *cons)
 {
 }
 
-int  __attribute__((weak)) kvm_arch_update_irqfd_routing(
-				struct kvm *kvm, unsigned int host_irq,
-				uint32_t guest_irq, bool set)
+int __attribute__((weak)) kvm_arch_update_irqfd_routing(struct kvm *kvm,
+							unsigned int host_irq,
+							uint32_t guest_irq,
+							bool set)
 {
 	return 0;
 }
 
-bool __attribute__((weak)) kvm_arch_irqfd_route_changed(
-				struct kvm_kernel_irq_routing_entry *old,
-				struct kvm_kernel_irq_routing_entry *new)
+bool __attribute__((weak))
+kvm_arch_irqfd_route_changed(struct kvm_kernel_irq_routing_entry *old,
+			     struct kvm_kernel_irq_routing_entry *new)
 {
 	return true;
 }
 #endif
 
-static int
-kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
+static int kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
 {
 	struct kvm_kernel_irqfd *irqfd, *tmp;
 	struct fd f;
@@ -355,8 +346,8 @@ kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
 
 		mutex_lock(&kvm->irqfds.resampler_lock);
 
-		list_for_each_entry(resampler,
-				    &kvm->irqfds.resampler_list, link) {
+		list_for_each_entry(resampler, &kvm->irqfds.resampler_list,
+				    link) {
 			if (resampler->notifier.gsi == irqfd->gsi) {
 				irqfd->resampler = resampler;
 				break;
@@ -364,8 +355,8 @@ kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
 		}
 
 		if (!irqfd->resampler) {
-			resampler = kzalloc(sizeof(*resampler),
-					    GFP_KERNEL_ACCOUNT);
+			resampler =
+				kzalloc(sizeof(*resampler), GFP_KERNEL_ACCOUNT);
 			if (!resampler) {
 				ret = -ENOMEM;
 				mutex_unlock(&kvm->irqfds.resampler_lock);
@@ -378,7 +369,8 @@ kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
 			resampler->notifier.irq_acked = irqfd_resampler_ack;
 			INIT_LIST_HEAD(&resampler->link);
 
-			list_add_rcu(&resampler->link, &kvm->irqfds.resampler_list);
+			list_add_rcu(&resampler->link,
+				     &kvm->irqfds.resampler_list);
 			kvm_register_irq_ack_notifier(kvm,
 						      &resampler->notifier);
 			irqfd->resampler = resampler;
@@ -474,7 +466,8 @@ bool kvm_irq_has_notifier(struct kvm *kvm, unsigned irqchip, unsigned pin)
 	gsi = kvm_irq_map_chip_pin(kvm, irqchip, pin);
 	if (gsi != -1)
 		hlist_for_each_entry_srcu(kian, &kvm->irq_ack_notifier_list,
-					  link, srcu_read_lock_held(&kvm->irq_srcu))
+					  link,
+					  srcu_read_lock_held(&kvm->irq_srcu))
 			if (kian->gsi == gsi) {
 				srcu_read_unlock(&kvm->irq_srcu, idx);
 				return true;
@@ -489,21 +482,23 @@ EXPORT_SYMBOL_GPL(kvm_irq_has_notifier);
 void kvm_notify_acked_gsi(struct kvm *kvm, int gsi)
 {
 	struct kvm_irq_ack_notifier *kian;
-
-	hlist_for_each_entry_srcu(kian, &kvm->irq_ack_notifier_list,
-				  link, srcu_read_lock_held(&kvm->irq_srcu))
+	pr_info("[MZH][kvm_notify_acked_gsi]:%d", gsi);
+	hlist_for_each_entry_srcu(kian, &kvm->irq_ack_notifier_list, link,
+				  srcu_read_lock_held(&kvm->irq_srcu))
 		if (kian->gsi == gsi)
 			kian->irq_acked(kian);
 }
 
 void kvm_notify_acked_irq(struct kvm *kvm, unsigned irqchip, unsigned pin)
 {
+
 	int gsi, idx;
 
 	trace_kvm_ack_irq(irqchip, pin);
 
 	idx = srcu_read_lock(&kvm->irq_srcu);
 	gsi = kvm_irq_map_chip_pin(kvm, irqchip, pin);
+	pr_info("[MZH][kvm_notify_acked_irq]:%d", gsi);
 	if (gsi != -1)
 		kvm_notify_acked_gsi(kvm, gsi);
 	srcu_read_unlock(&kvm->irq_srcu, idx);
@@ -519,7 +514,7 @@ void kvm_register_irq_ack_notifier(struct kvm *kvm,
 }
 
 void kvm_unregister_irq_ack_notifier(struct kvm *kvm,
-				    struct kvm_irq_ack_notifier *kian)
+				     struct kvm_irq_ack_notifier *kian)
 {
 	mutex_lock(&kvm->irq_lock);
 	hlist_del_init_rcu(&kian->link);
@@ -531,8 +526,7 @@ void kvm_unregister_irq_ack_notifier(struct kvm *kvm,
 /*
  * shutdown any irqfd's that match fd+gsi
  */
-static int
-kvm_irqfd_deassign(struct kvm *kvm, struct kvm_irqfd *args)
+static int kvm_irqfd_deassign(struct kvm *kvm, struct kvm_irqfd *args)
 {
 	struct kvm_kernel_irqfd *irqfd, *tmp;
 	struct eventfd_ctx *eventfd;
@@ -571,8 +565,7 @@ kvm_irqfd_deassign(struct kvm *kvm, struct kvm_irqfd *args)
 	return 0;
 }
 
-int
-kvm_irqfd(struct kvm *kvm, struct kvm_irqfd *args)
+int kvm_irqfd(struct kvm *kvm, struct kvm_irqfd *args)
 {
 	if (args->flags & ~(KVM_IRQFD_FLAG_DEASSIGN | KVM_IRQFD_FLAG_RESAMPLE))
 		return -EINVAL;
@@ -587,8 +580,7 @@ kvm_irqfd(struct kvm *kvm, struct kvm_irqfd *args)
  * This function is called as the kvm VM fd is being released. Shutdown all
  * irqfds that still remain open
  */
-void
-kvm_irqfd_release(struct kvm *kvm)
+void kvm_irqfd_release(struct kvm *kvm)
 {
 	struct kvm_kernel_irqfd *irqfd, *tmp;
 
@@ -604,7 +596,6 @@ kvm_irqfd_release(struct kvm *kvm)
 	 * since we do not take a kvm* reference.
 	 */
 	flush_workqueue(irqfd_cleanup_wq);
-
 }
 
 /*
@@ -629,8 +620,8 @@ void kvm_irq_routing_update(struct kvm *kvm)
 		if (irqfd->producer &&
 		    kvm_arch_irqfd_route_changed(&old, &irqfd->irq_entry)) {
 			int ret = kvm_arch_update_irqfd_routing(
-					irqfd->kvm, irqfd->producer->irq,
-					irqfd->gsi, 1);
+				irqfd->kvm, irqfd->producer->irq, irqfd->gsi,
+				1);
 			WARN_ON(ret);
 		}
 #endif
@@ -639,8 +630,7 @@ void kvm_irq_routing_update(struct kvm *kvm)
 	spin_unlock_irq(&kvm->irqfds.lock);
 }
 
-bool kvm_notify_irqfd_resampler(struct kvm *kvm,
-				unsigned int irqchip,
+bool kvm_notify_irqfd_resampler(struct kvm *kvm, unsigned int irqchip,
 				unsigned int pin)
 {
 	struct kvm_kernel_irqfd_resampler *resampler;
@@ -649,8 +639,8 @@ bool kvm_notify_irqfd_resampler(struct kvm *kvm,
 	idx = srcu_read_lock(&kvm->irq_srcu);
 	gsi = kvm_irq_map_chip_pin(kvm, irqchip, pin);
 	if (gsi != -1) {
-		list_for_each_entry_srcu(resampler,
-					 &kvm->irqfds.resampler_list, link,
+		list_for_each_entry_srcu(resampler, &kvm->irqfds.resampler_list,
+					 link,
 					 srcu_read_lock_held(&kvm->irq_srcu)) {
 			if (resampler->notifier.gsi == gsi) {
 				irqfd_resampler_notify(resampler);
@@ -694,32 +684,30 @@ void kvm_irqfd_exit(void)
  */
 
 struct _ioeventfd {
-	struct list_head     list;
-	u64                  addr;
-	int                  length;
-	struct eventfd_ctx  *eventfd;
-	u64                  datamatch;
+	struct list_head list;
+	u64 addr;
+	int length;
+	struct eventfd_ctx *eventfd;
+	u64 datamatch;
 	struct kvm_io_device dev;
-	u8                   bus_idx;
-	bool                 wildcard;
+	u8 bus_idx;
+	bool wildcard;
 };
 
-static inline struct _ioeventfd *
-to_ioeventfd(struct kvm_io_device *dev)
+static inline struct _ioeventfd *to_ioeventfd(struct kvm_io_device *dev)
 {
 	return container_of(dev, struct _ioeventfd, dev);
 }
 
-static void
-ioeventfd_release(struct _ioeventfd *p)
+static void ioeventfd_release(struct _ioeventfd *p)
 {
 	eventfd_ctx_put(p->eventfd);
 	list_del(&p->list);
 	kfree(p);
 }
 
-static bool
-ioeventfd_in_range(struct _ioeventfd *p, gpa_t addr, int len, const void *val)
+static bool ioeventfd_in_range(struct _ioeventfd *p, gpa_t addr, int len,
+			       const void *val)
 {
 	u64 _val;
 
@@ -764,9 +752,8 @@ ioeventfd_in_range(struct _ioeventfd *p, gpa_t addr, int len, const void *val)
 }
 
 /* MMIO/PIO writes trigger an event if the addr/val match */
-static int
-ioeventfd_write(struct kvm_vcpu *vcpu, struct kvm_io_device *this, gpa_t addr,
-		int len, const void *val)
+static int ioeventfd_write(struct kvm_vcpu *vcpu, struct kvm_io_device *this,
+			   gpa_t addr, int len, const void *val)
 {
 	struct _ioeventfd *p = to_ioeventfd(this);
 
@@ -781,8 +768,7 @@ ioeventfd_write(struct kvm_vcpu *vcpu, struct kvm_io_device *this, gpa_t addr,
  * This function is called as KVM is completely shutting down.  We do not
  * need to worry about locking just nuke anything we have as quickly as possible
  */
-static void
-ioeventfd_destructor(struct kvm_io_device *this)
+static void ioeventfd_destructor(struct kvm_io_device *this)
 {
 	struct _ioeventfd *p = to_ioeventfd(this);
 
@@ -790,19 +776,17 @@ ioeventfd_destructor(struct kvm_io_device *this)
 }
 
 static const struct kvm_io_device_ops ioeventfd_ops = {
-	.write      = ioeventfd_write,
+	.write = ioeventfd_write,
 	.destructor = ioeventfd_destructor,
 };
 
 /* assumes kvm->slots_lock held */
-static bool
-ioeventfd_check_collision(struct kvm *kvm, struct _ioeventfd *p)
+static bool ioeventfd_check_collision(struct kvm *kvm, struct _ioeventfd *p)
 {
 	struct _ioeventfd *_p;
 
 	list_for_each_entry(_p, &kvm->ioeventfds, list)
-		if (_p->bus_idx == p->bus_idx &&
-		    _p->addr == p->addr &&
+		if (_p->bus_idx == p->bus_idx && _p->addr == p->addr &&
 		    (!_p->length || !p->length ||
 		     (_p->length == p->length &&
 		      (_p->wildcard || p->wildcard ||
@@ -821,11 +805,9 @@ static enum kvm_bus ioeventfd_bus_from_flags(__u32 flags)
 	return KVM_MMIO_BUS;
 }
 
-static int kvm_assign_ioeventfd_idx(struct kvm *kvm,
-				enum kvm_bus bus_idx,
-				struct kvm_ioeventfd *args)
+static int kvm_assign_ioeventfd_idx(struct kvm *kvm, enum kvm_bus bus_idx,
+				    struct kvm_ioeventfd *args)
 {
-
 	struct eventfd_ctx *eventfd;
 	struct _ioeventfd *p;
 	int ret;
@@ -841,9 +823,9 @@ static int kvm_assign_ioeventfd_idx(struct kvm *kvm,
 	}
 
 	INIT_LIST_HEAD(&p->list);
-	p->addr    = args->addr;
+	p->addr = args->addr;
 	p->bus_idx = bus_idx;
-	p->length  = args->len;
+	p->length = args->len;
 	p->eventfd = eventfd;
 
 	/* The datamatch feature is optional, otherwise this is a wildcard */
@@ -884,15 +866,14 @@ fail:
 	return ret;
 }
 
-static int
-kvm_deassign_ioeventfd_idx(struct kvm *kvm, enum kvm_bus bus_idx,
-			   struct kvm_ioeventfd *args)
+static int kvm_deassign_ioeventfd_idx(struct kvm *kvm, enum kvm_bus bus_idx,
+				      struct kvm_ioeventfd *args)
 {
-	struct _ioeventfd        *p;
-	struct eventfd_ctx       *eventfd;
-	struct kvm_io_bus	 *bus;
-	int                       ret = -ENOENT;
-	bool                      wildcard;
+	struct _ioeventfd *p;
+	struct eventfd_ctx *eventfd;
+	struct kvm_io_bus *bus;
+	int ret = -ENOENT;
+	bool wildcard;
 
 	eventfd = eventfd_ctx_fdget(args->fd);
 	if (IS_ERR(eventfd))
@@ -903,10 +884,8 @@ kvm_deassign_ioeventfd_idx(struct kvm *kvm, enum kvm_bus bus_idx,
 	mutex_lock(&kvm->slots_lock);
 
 	list_for_each_entry(p, &kvm->ioeventfds, list) {
-		if (p->bus_idx != bus_idx ||
-		    p->eventfd != eventfd  ||
-		    p->addr != args->addr  ||
-		    p->length != args->len ||
+		if (p->bus_idx != bus_idx || p->eventfd != eventfd ||
+		    p->addr != args->addr || p->length != args->len ||
 		    p->wildcard != wildcard)
 			continue;
 
@@ -939,10 +918,9 @@ static int kvm_deassign_ioeventfd(struct kvm *kvm, struct kvm_ioeventfd *args)
 	return ret;
 }
 
-static int
-kvm_assign_ioeventfd(struct kvm *kvm, struct kvm_ioeventfd *args)
+static int kvm_assign_ioeventfd(struct kvm *kvm, struct kvm_ioeventfd *args)
 {
-	enum kvm_bus              bus_idx;
+	enum kvm_bus bus_idx;
 	int ret;
 
 	bus_idx = ioeventfd_bus_from_flags(args->flags);
@@ -991,8 +969,7 @@ fail:
 	return ret;
 }
 
-int
-kvm_ioeventfd(struct kvm *kvm, struct kvm_ioeventfd *args)
+int kvm_ioeventfd(struct kvm *kvm, struct kvm_ioeventfd *args)
 {
 	if (args->flags & KVM_IOEVENTFD_FLAG_DEASSIGN)
 		return kvm_deassign_ioeventfd(kvm, args);
@@ -1000,8 +977,7 @@ kvm_ioeventfd(struct kvm *kvm, struct kvm_ioeventfd *args)
 	return kvm_assign_ioeventfd(kvm, args);
 }
 
-void
-kvm_eventfd_init(struct kvm *kvm)
+void kvm_eventfd_init(struct kvm *kvm)
 {
 #ifdef CONFIG_HAVE_KVM_IRQCHIP
 	spin_lock_init(&kvm->irqfds.lock);

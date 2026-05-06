@@ -47,21 +47,23 @@
  *
  * Return: 0 on success, a negative error code otherwise.
  */
-static int
-panthor_set_uobj(u64 usr_ptr, u32 usr_size, u32 min_size, u32 kern_size, const void *in)
+static int panthor_set_uobj(u64 usr_ptr, u32 usr_size, u32 min_size,
+			    u32 kern_size, const void *in)
 {
 	/* User size shouldn't be smaller than the minimal object size. */
 	if (usr_size < min_size)
 		return -EINVAL;
 
-	if (copy_to_user(u64_to_user_ptr(usr_ptr), in, min_t(u32, usr_size, kern_size)))
+	if (copy_to_user(u64_to_user_ptr(usr_ptr), in,
+			 min_t(u32, usr_size, kern_size)))
 		return -EFAULT;
 
 	/* When the kernel object is smaller than the user object, we fill the gap with
 	 * zeros.
 	 */
 	if (usr_size > kern_size &&
-	    clear_user(u64_to_user_ptr(usr_ptr + kern_size), usr_size - kern_size)) {
+	    clear_user(u64_to_user_ptr(usr_ptr + kern_size),
+		       usr_size - kern_size)) {
 		return -EFAULT;
 	}
 
@@ -80,9 +82,8 @@ panthor_set_uobj(u64 usr_ptr, u32 usr_size, u32 min_size, u32 kern_size, const v
  *
  * Return: newly allocated object array or an ERR_PTR on error.
  */
-static void *
-panthor_get_uobj_array(const struct drm_panthor_obj_array *in, u32 min_stride,
-		       u32 obj_size)
+static void *panthor_get_uobj_array(const struct drm_panthor_obj_array *in,
+				    u32 min_stride, u32 obj_size)
 {
 	int ret = 0;
 	void *out_alloc;
@@ -111,7 +112,8 @@ panthor_get_uobj_array(const struct drm_panthor_obj_array *in, u32 min_stride,
 
 		/* If the sizes differ, we need to copy elements one by one. */
 		for (u32 i = 0; i < in->count; i++) {
-			ret = copy_struct_from_user(out_ptr, obj_size, in_ptr, in->stride);
+			ret = copy_struct_from_user(out_ptr, obj_size, in_ptr,
+						    in->stride);
 			if (ret)
 				break;
 
@@ -140,7 +142,7 @@ panthor_get_uobj_array(const struct drm_panthor_obj_array *in, u32 min_stride,
  * Don't use directly, use PANTHOR_UOBJ_DECL() instead.
  */
 #define PANTHOR_UOBJ_MIN_SIZE_INTERNAL(_typename, _last_mandatory_field) \
-	(offsetof(_typename, _last_mandatory_field) + \
+	(offsetof(_typename, _last_mandatory_field) +                    \
 	 sizeof(((_typename *)NULL)->_last_mandatory_field))
 
 /**
@@ -152,7 +154,8 @@ panthor_get_uobj_array(const struct drm_panthor_obj_array *in, u32 min_stride,
  * Should be used to extend the PANTHOR_UOBJ_MIN_SIZE() list.
  */
 #define PANTHOR_UOBJ_DECL(_typename, _last_mandatory_field) \
-	_typename : PANTHOR_UOBJ_MIN_SIZE_INTERNAL(_typename, _last_mandatory_field)
+_typename:                                                  \
+	PANTHOR_UOBJ_MIN_SIZE_INTERNAL(_typename, _last_mandatory_field)
 
 /**
  * PANTHOR_UOBJ_MIN_SIZE() - Get the minimum size of a given uAPI object
@@ -161,14 +164,15 @@ panthor_get_uobj_array(const struct drm_panthor_obj_array *in, u32 min_stride,
  * Don't use this macro directly, it's automatically called by
  * PANTHOR_UOBJ_{SET,GET_ARRAY}().
  */
-#define PANTHOR_UOBJ_MIN_SIZE(_obj_name) \
-	_Generic(_obj_name, \
-		 PANTHOR_UOBJ_DECL(struct drm_panthor_gpu_info, tiler_present), \
-		 PANTHOR_UOBJ_DECL(struct drm_panthor_csif_info, pad), \
-		 PANTHOR_UOBJ_DECL(struct drm_panthor_sync_op, timeline_value), \
-		 PANTHOR_UOBJ_DECL(struct drm_panthor_queue_submit, syncs), \
-		 PANTHOR_UOBJ_DECL(struct drm_panthor_queue_create, ringbuf_size), \
-		 PANTHOR_UOBJ_DECL(struct drm_panthor_vm_bind_op, syncs))
+#define PANTHOR_UOBJ_MIN_SIZE(_obj_name)                                       \
+	_Generic(_obj_name,                                                    \
+		PANTHOR_UOBJ_DECL(struct drm_panthor_gpu_info, tiler_present), \
+		PANTHOR_UOBJ_DECL(struct drm_panthor_csif_info, pad),          \
+		PANTHOR_UOBJ_DECL(struct drm_panthor_sync_op, timeline_value), \
+		PANTHOR_UOBJ_DECL(struct drm_panthor_queue_submit, syncs),     \
+		PANTHOR_UOBJ_DECL(struct drm_panthor_queue_create,             \
+				  ringbuf_size),                               \
+		PANTHOR_UOBJ_DECL(struct drm_panthor_vm_bind_op, syncs))
 
 /**
  * PANTHOR_UOBJ_SET() - Copy a kernel object to a user object.
@@ -178,10 +182,10 @@ panthor_get_uobj_array(const struct drm_panthor_obj_array *in, u32 min_stride,
  *
  * Return: 0 on success, a negative error code otherwise.
  */
-#define PANTHOR_UOBJ_SET(_dest_usr_ptr, _usr_size, _src_obj) \
-	panthor_set_uobj(_dest_usr_ptr, _usr_size, \
-			 PANTHOR_UOBJ_MIN_SIZE(_src_obj), \
-			 sizeof(_src_obj), &(_src_obj))
+#define PANTHOR_UOBJ_SET(_dest_usr_ptr, _usr_size, _src_obj)                \
+	panthor_set_uobj(_dest_usr_ptr, _usr_size,                          \
+			 PANTHOR_UOBJ_MIN_SIZE(_src_obj), sizeof(_src_obj), \
+			 &(_src_obj))
 
 /**
  * PANTHOR_UOBJ_GET_ARRAY() - Copy a user object array to a kernel accessible
@@ -193,15 +197,15 @@ panthor_get_uobj_array(const struct drm_panthor_obj_array *in, u32 min_stride,
  *
  * Return: 0 on success, a negative error code otherwise.
  */
-#define PANTHOR_UOBJ_GET_ARRAY(_dest_array, _uobj_array) \
-	({ \
-		typeof(_dest_array) _tmp; \
-		_tmp = panthor_get_uobj_array(_uobj_array, \
-					      PANTHOR_UOBJ_MIN_SIZE((_dest_array)[0]), \
-					      sizeof((_dest_array)[0])); \
-		if (!IS_ERR(_tmp)) \
-			_dest_array = _tmp; \
-		PTR_ERR_OR_ZERO(_tmp); \
+#define PANTHOR_UOBJ_GET_ARRAY(_dest_array, _uobj_array)                      \
+	({                                                                    \
+		typeof(_dest_array) _tmp;                                     \
+		_tmp = panthor_get_uobj_array(                                \
+			_uobj_array, PANTHOR_UOBJ_MIN_SIZE((_dest_array)[0]), \
+			sizeof((_dest_array)[0]));                            \
+		if (!IS_ERR(_tmp))                                            \
+			_dest_array = _tmp;                                   \
+		PTR_ERR_OR_ZERO(_tmp);                                        \
 	})
 
 /**
@@ -321,8 +325,7 @@ static bool sync_op_is_wait(const struct drm_panthor_sync_op *sync_op)
  *
  * Return: 0 on success, -EINVAL otherwise.
  */
-static int
-panthor_check_sync_op(const struct drm_panthor_sync_op *sync_op)
+static int panthor_check_sync_op(const struct drm_panthor_sync_op *sync_op)
 {
 	u8 handle_type;
 
@@ -345,8 +348,7 @@ panthor_check_sync_op(const struct drm_panthor_sync_op *sync_op)
  * panthor_sync_signal_free() - Release resources and free a panthor_sync_signal object
  * @sig_sync: Signal object to free.
  */
-static void
-panthor_sync_signal_free(struct panthor_sync_signal *sig_sync)
+static void panthor_sync_signal_free(struct panthor_sync_signal *sig_sync)
 {
 	if (!sig_sync)
 		return;
@@ -365,8 +367,8 @@ panthor_sync_signal_free(struct panthor_sync_signal *sig_sync)
  *
  * Return: 0 on success, otherwise negative error value.
  */
-static int
-panthor_submit_ctx_add_sync_signal(struct panthor_submit_ctx *ctx, u32 handle, u64 point)
+static int panthor_submit_ctx_add_sync_signal(struct panthor_submit_ctx *ctx,
+					      u32 handle, u64 point)
 {
 	struct panthor_sync_signal *sig_sync;
 	struct dma_fence *cur_fence;
@@ -419,7 +421,8 @@ err_free_sig_sync:
  * Return: A valid panthor_sync_signal object if found, NULL otherwise.
  */
 static struct panthor_sync_signal *
-panthor_submit_ctx_search_sync_signal(struct panthor_submit_ctx *ctx, u32 handle, u64 point)
+panthor_submit_ctx_search_sync_signal(struct panthor_submit_ctx *ctx,
+				      u32 handle, u64 point)
 {
 	struct panthor_sync_signal *sig_sync;
 
@@ -440,10 +443,9 @@ panthor_submit_ctx_search_sync_signal(struct panthor_submit_ctx *ctx, u32 handle
  *
  * Return: 0 on success, a negative error code otherwise.
  */
-static int
-panthor_submit_ctx_add_job(struct panthor_submit_ctx *ctx, u32 idx,
-			   struct drm_sched_job *job,
-			   const struct drm_panthor_obj_array *syncs)
+static int panthor_submit_ctx_add_job(struct panthor_submit_ctx *ctx, u32 idx,
+				      struct drm_sched_job *job,
+				      const struct drm_panthor_obj_array *syncs)
 {
 	int ret;
 
@@ -465,8 +467,8 @@ panthor_submit_ctx_add_job(struct panthor_submit_ctx *ctx, u32 idx,
  *
  * Return: 0 on success, a negative error code otherwise.
  */
-static int
-panthor_submit_ctx_get_sync_signal(struct panthor_submit_ctx *ctx, u32 handle, u64 point)
+static int panthor_submit_ctx_get_sync_signal(struct panthor_submit_ctx *ctx,
+					      u32 handle, u64 point)
 {
 	struct panthor_sync_signal *sig_sync;
 
@@ -489,10 +491,10 @@ static int
 panthor_submit_ctx_update_job_sync_signal_fences(struct panthor_submit_ctx *ctx,
 						 u32 job_idx)
 {
-	struct panthor_device *ptdev = container_of(ctx->file->minor->dev,
-						    struct panthor_device,
-						    base);
-	struct dma_fence *done_fence = &ctx->jobs[job_idx].job->s_fence->finished;
+	struct panthor_device *ptdev = container_of(
+		ctx->file->minor->dev, struct panthor_device, base);
+	struct dma_fence *done_fence =
+		&ctx->jobs[job_idx].job->s_fence->finished;
 	const struct drm_panthor_sync_op *sync_ops = ctx->jobs[job_idx].syncops;
 	u32 sync_op_count = ctx->jobs[job_idx].syncop_count;
 
@@ -503,8 +505,8 @@ panthor_submit_ctx_update_job_sync_signal_fences(struct panthor_submit_ctx *ctx,
 		if (!sync_op_is_signal(&sync_ops[i]))
 			continue;
 
-		sig_sync = panthor_submit_ctx_search_sync_signal(ctx, sync_ops[i].handle,
-								 sync_ops[i].timeline_value);
+		sig_sync = panthor_submit_ctx_search_sync_signal(
+			ctx, sync_ops[i].handle, sync_ops[i].timeline_value);
 		if (drm_WARN_ON(&ptdev->base, !sig_sync))
 			return -EINVAL;
 
@@ -544,9 +546,8 @@ panthor_submit_ctx_collect_job_signal_ops(struct panthor_submit_ctx *ctx,
 		if (ret)
 			return ret;
 
-		ret = panthor_submit_ctx_get_sync_signal(ctx,
-							 sync_ops[i].handle,
-							 sync_ops[i].timeline_value);
+		ret = panthor_submit_ctx_get_sync_signal(
+			ctx, sync_ops[i].handle, sync_ops[i].timeline_value);
 		if (ret)
 			return ret;
 	}
@@ -562,18 +563,19 @@ panthor_submit_ctx_collect_job_signal_ops(struct panthor_submit_ctx *ctx,
  * This is the last step of a submission procedure, and is done once we know the submission
  * is effective and job fences are guaranteed to be signaled in finite time.
  */
-static void
-panthor_submit_ctx_push_fences(struct panthor_submit_ctx *ctx)
+static void panthor_submit_ctx_push_fences(struct panthor_submit_ctx *ctx)
 {
 	struct panthor_sync_signal *sig_sync;
 
 	list_for_each_entry(sig_sync, &ctx->signals, node) {
 		if (sig_sync->chain) {
-			drm_syncobj_add_point(sig_sync->syncobj, sig_sync->chain,
-					      sig_sync->fence, sig_sync->point);
+			drm_syncobj_add_point(sig_sync->syncobj,
+					      sig_sync->chain, sig_sync->fence,
+					      sig_sync->point);
 			sig_sync->chain = NULL;
 		} else {
-			drm_syncobj_replace_fence(sig_sync->syncobj, sig_sync->fence);
+			drm_syncobj_replace_fence(sig_sync->syncobj,
+						  sig_sync->fence);
 		}
 	}
 }
@@ -590,9 +592,8 @@ static int
 panthor_submit_ctx_add_sync_deps_to_job(struct panthor_submit_ctx *ctx,
 					u32 job_idx)
 {
-	struct panthor_device *ptdev = container_of(ctx->file->minor->dev,
-						    struct panthor_device,
-						    base);
+	struct panthor_device *ptdev = container_of(
+		ctx->file->minor->dev, struct panthor_device, base);
 	const struct drm_panthor_sync_op *sync_ops = ctx->jobs[job_idx].syncops;
 	struct drm_sched_job *job = ctx->jobs[job_idx].job;
 	u32 sync_op_count = ctx->jobs[job_idx].syncop_count;
@@ -609,15 +610,16 @@ panthor_submit_ctx_add_sync_deps_to_job(struct panthor_submit_ctx *ctx,
 		if (ret)
 			return ret;
 
-		sig_sync = panthor_submit_ctx_search_sync_signal(ctx, sync_ops[i].handle,
-								 sync_ops[i].timeline_value);
+		sig_sync = panthor_submit_ctx_search_sync_signal(
+			ctx, sync_ops[i].handle, sync_ops[i].timeline_value);
 		if (sig_sync) {
 			if (drm_WARN_ON(&ptdev->base, !sig_sync->fence))
 				return -EINVAL;
 
 			fence = dma_fence_get(sig_sync->fence);
 		} else {
-			ret = drm_syncobj_find_fence(ctx->file, sync_ops[i].handle,
+			ret = drm_syncobj_find_fence(ctx->file,
+						     sync_ops[i].handle,
 						     sync_ops[i].timeline_value,
 						     0, &fence);
 			if (ret)
@@ -687,9 +689,9 @@ panthor_submit_ctx_add_deps_and_arm_jobs(struct panthor_submit_ctx *ctx)
  * @upd_resvs: Callback used to update reservation objects that were previously
  * preapred.
  */
-static void
-panthor_submit_ctx_push_jobs(struct panthor_submit_ctx *ctx,
-			     void (*upd_resvs)(struct drm_exec *, struct drm_sched_job *))
+static void panthor_submit_ctx_push_jobs(
+	struct panthor_submit_ctx *ctx,
+	void (*upd_resvs)(struct drm_exec *, struct drm_sched_job *))
 {
 	for (u32 i = 0; i < ctx->job_count; i++) {
 		upd_resvs(&ctx->exec, ctx->jobs[i].job);
@@ -751,9 +753,11 @@ static void panthor_submit_ctx_cleanup(struct panthor_submit_ctx *ctx,
 	kvfree(ctx->jobs);
 }
 
-static int panthor_ioctl_dev_query(struct drm_device *ddev, void *data, struct drm_file *file)
+static int panthor_ioctl_dev_query(struct drm_device *ddev, void *data,
+				   struct drm_file *file)
 {
-	struct panthor_device *ptdev = container_of(ddev, struct panthor_device, base);
+	struct panthor_device *ptdev =
+		container_of(ddev, struct panthor_device, base);
 	struct drm_panthor_dev_query *args = data;
 
 	if (!args->pointer) {
@@ -773,22 +777,25 @@ static int panthor_ioctl_dev_query(struct drm_device *ddev, void *data, struct d
 
 	switch (args->type) {
 	case DRM_PANTHOR_DEV_QUERY_GPU_INFO:
-		return PANTHOR_UOBJ_SET(args->pointer, args->size, ptdev->gpu_info);
+		return PANTHOR_UOBJ_SET(args->pointer, args->size,
+					ptdev->gpu_info);
 
 	case DRM_PANTHOR_DEV_QUERY_CSIF_INFO:
-		return PANTHOR_UOBJ_SET(args->pointer, args->size, ptdev->csif_info);
+		return PANTHOR_UOBJ_SET(args->pointer, args->size,
+					ptdev->csif_info);
 
 	default:
 		return -EINVAL;
 	}
 }
 
-#define PANTHOR_VM_CREATE_FLAGS			0
+#define PANTHOR_VM_CREATE_FLAGS 0
 
 static int panthor_ioctl_vm_create(struct drm_device *ddev, void *data,
 				   struct drm_file *file)
 {
-	struct panthor_device *ptdev = container_of(ddev, struct panthor_device, base);
+	struct panthor_device *ptdev =
+		container_of(ddev, struct panthor_device, base);
 	struct panthor_file *pfile = file->driver_priv;
 	struct drm_panthor_vm_create *args = data;
 	int cookie, ret;
@@ -796,7 +803,7 @@ static int panthor_ioctl_vm_create(struct drm_device *ddev, void *data,
 	if (!drm_dev_enter(ddev, &cookie))
 		return -ENODEV;
 
-	ret = panthor_vm_pool_create_vm(ptdev, pfile->vms,  args);
+	ret = panthor_vm_pool_create_vm(ptdev, pfile->vms, args);
 	if (ret >= 0) {
 		args->id = ret;
 		ret = 0;
@@ -818,7 +825,7 @@ static int panthor_ioctl_vm_destroy(struct drm_device *ddev, void *data,
 	return panthor_vm_pool_destroy_vm(pfile->vms, args->id);
 }
 
-#define PANTHOR_BO_FLAGS		DRM_PANTHOR_BO_NO_MMAP
+#define PANTHOR_BO_FLAGS DRM_PANTHOR_BO_NO_MMAP
 
 static int panthor_ioctl_bo_create(struct drm_device *ddev, void *data,
 				   struct drm_file *file)
@@ -831,8 +838,7 @@ static int panthor_ioctl_bo_create(struct drm_device *ddev, void *data,
 	if (!drm_dev_enter(ddev, &cookie))
 		return -ENODEV;
 
-	if (!args->size || args->pad ||
-	    (args->flags & ~PANTHOR_BO_FLAGS)) {
+	if (!args->size || args->pad || (args->flags & ~PANTHOR_BO_FLAGS)) {
 		ret = -EINVAL;
 		goto out_dev_exit;
 	}
@@ -949,9 +955,10 @@ static int panthor_ioctl_group_submit(struct drm_device *ddev, void *data,
 		/* All jobs target the same group, so they also point to the same VM. */
 		struct panthor_vm *vm = panthor_job_vm(ctx.jobs[0].job);
 
-		drm_exec_until_all_locked(&ctx.exec) {
-			ret = panthor_vm_prepare_mapped_bos_resvs(&ctx.exec, vm,
-								  args->queue_submits.count);
+		drm_exec_until_all_locked(&ctx.exec)
+		{
+			ret = panthor_vm_prepare_mapped_bos_resvs(
+				&ctx.exec, vm, args->queue_submits.count);
 		}
 
 		if (ret)
@@ -997,8 +1004,7 @@ static int panthor_ioctl_group_destroy(struct drm_device *ddev, void *data,
 	return panthor_group_destroy(pfile, args->group_handle);
 }
 
-static int group_priority_permit(struct drm_file *file,
-				 u8 priority)
+static int group_priority_permit(struct drm_file *file, u8 priority)
 {
 	/* Ensure that priority is valid */
 	if (priority > PANTHOR_GROUP_PRIORITY_HIGH)
@@ -1072,10 +1078,8 @@ static int panthor_ioctl_tiler_heap_create(struct drm_device *ddev, void *data,
 		goto out_put_vm;
 	}
 
-	ret = panthor_heap_create(pool,
-				  args->initial_chunk_count,
-				  args->chunk_size,
-				  args->max_chunks,
+	ret = panthor_heap_create(pool, args->initial_chunk_count,
+				  args->chunk_size, args->max_chunks,
 				  args->target_in_flight,
 				  &args->tiler_heap_ctx_gpu_va,
 				  &args->first_heap_chunk_gpu_va);
@@ -1168,9 +1172,11 @@ static int panthor_ioctl_vm_bind_async(struct drm_device *ddev,
 		goto out_cleanup_submit_ctx;
 
 	/* Prepare reservation objects for each VM_BIND job. */
-	drm_exec_until_all_locked(&ctx.exec) {
+	drm_exec_until_all_locked(&ctx.exec)
+	{
 		for (u32 i = 0; i < ctx.job_count; i++) {
-			ret = panthor_vm_bind_job_prepare_resvs(&ctx.exec, ctx.jobs[i].job);
+			ret = panthor_vm_bind_job_prepare_resvs(
+				&ctx.exec, ctx.jobs[i].job);
 			drm_exec_retry_on_contention(&ctx.exec);
 			if (ret)
 				goto out_cleanup_submit_ctx;
@@ -1268,10 +1274,10 @@ static int panthor_ioctl_vm_get_state(struct drm_device *ddev, void *data,
 	return 0;
 }
 
-static int
-panthor_open(struct drm_device *ddev, struct drm_file *file)
+static int panthor_open(struct drm_device *ddev, struct drm_file *file)
 {
-	struct panthor_device *ptdev = container_of(ddev, struct panthor_device, base);
+	struct panthor_device *ptdev =
+		container_of(ddev, struct panthor_device, base);
 	struct panthor_file *pfile;
 	int ret;
 
@@ -1308,8 +1314,7 @@ err_put_mod:
 	return ret;
 }
 
-static void
-panthor_postclose(struct drm_device *ddev, struct drm_file *file)
+static void panthor_postclose(struct drm_device *ddev, struct drm_file *file)
 {
 	struct panthor_file *pfile = file->driver_priv;
 
@@ -1446,10 +1451,8 @@ static const struct of_device_id dt_match[] = {
 };
 MODULE_DEVICE_TABLE(of, dt_match);
 
-static DEFINE_RUNTIME_DEV_PM_OPS(panthor_pm_ops,
-				 panthor_device_suspend,
-				 panthor_device_resume,
-				 NULL);
+static DEFINE_RUNTIME_DEV_PM_OPS(panthor_pm_ops, panthor_device_suspend,
+				 panthor_device_resume, NULL);
 
 static struct platform_driver panthor_driver = {
 	.probe = panthor_probe,
@@ -1471,6 +1474,7 @@ struct workqueue_struct *panthor_cleanup_wq;
 
 static int __init panthor_init(void)
 {
+	pr_info("[MZH][PANTHOR drv] init");
 	int ret;
 
 	ret = panthor_mmu_pt_cache_init();

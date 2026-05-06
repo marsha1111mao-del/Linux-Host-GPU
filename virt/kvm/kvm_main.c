@@ -58,7 +58,6 @@
 #include "async_pf.h"
 #include "kvm_mm.h"
 #include "vfio.h"
-
 #include <trace/events/ipi.h>
 
 #define CREATE_TRACE_POINTS
@@ -2159,6 +2158,33 @@ static int kvm_vm_ioctl_set_mmio_region(struct kvm *kvm,
 	}
 	return kvm_arch_set_mmio_region(kvm, mmio_region);
 }
+
+// static int kvm_set_irq_pass(struct kvm *kvm, struct kvm_irq_pass *irq_pass)
+// {
+// 	return kvm_arch_set_irq_pass(kvm, irq_pass);
+// }
+
+// static int kvm_vm_ioctl_set_irq_pass(struct kvm *kvm,
+// 				     struct kvm_irq_pass *irq_pass)
+// {
+// 	pr_info("[MZH]kvm_vm_ioctl_set_irq_pass host_irq:%llx\tguest_irq:%llx\tconfig:%llx",
+// 		irq_pass->host_irq, irq_pass->guest_irq, irq_pass->irq_config);
+// 	if (!vgic_initialized(kvm)) {
+// 		pr_err("[MZH]VGIC not initialized\n");
+// 		return -EAGAIN;
+// 	}
+// 	struct irq_desc *desc = irq_to_desc(irq_pass->host_irq);
+// 	if (!desc) {
+// 		pr_err("[MZH]Invalid Host IRQ: %llu\n", irq_pass->host_irq);
+// 		return -ENODEV;
+// 	}
+// 	if (irq_pass->irq_config != VGIC_CONFIG_LEVEL &&
+// 	    irq_pass->irq_config != VGIC_CONFIG_EDGE) {
+// 		pr_err("[MZH]Invalid IRQ Config: %llu\n", irq_pass->irq_config);
+// 		return -EINVAL;
+// 	}
+// 	return kvm_set_irq_pass(kvm, irq_pass);
+// }
 
 #ifndef CONFIG_KVM_GENERIC_DIRTYLOG_READ_PROTECT
 /**
@@ -5434,6 +5460,14 @@ static long kvm_vm_ioctl(struct file *filp, unsigned int ioctl,
 		r = kvm_vm_ioctl_set_mmio_region(kvm, &mmio_region);
 		break;
 	}
+	// case KVM_SET_IRQ_PASS: {
+	// 	struct kvm_irq_pass irq_pass;
+	// 	r = -EFAULT;
+	// 	if (copy_from_user(&irq_pass, argp, sizeof(irq_pass)))
+	// 		goto out;
+	// 	r = kvm_vm_ioctl_set_irq_pass(kvm, &irq_pass);
+	// 	break;
+	// }
 	default:
 		r = kvm_arch_vm_ioctl(filp, ioctl, arg);
 	}

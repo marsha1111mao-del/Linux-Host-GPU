@@ -8,16 +8,16 @@
 #include <linux/irqchip/arm-gic-common.h>
 #include <asm/kvm_mmu.h>
 
-#define PRODUCT_ID_KVM		0x4b	/* ASCII code K */
-#define IMPLEMENTER_ARM		0x43b
+#define PRODUCT_ID_KVM 0x4b /* ASCII code K */
+#define IMPLEMENTER_ARM 0x43b
 
-#define VGIC_ADDR_UNDEF		(-1)
-#define IS_VGIC_ADDR_UNDEF(_x)  ((_x) == VGIC_ADDR_UNDEF)
+#define VGIC_ADDR_UNDEF (-1)
+#define IS_VGIC_ADDR_UNDEF(_x) ((_x) == VGIC_ADDR_UNDEF)
 
-#define INTERRUPT_ID_BITS_SPIS	10
-#define INTERRUPT_ID_BITS_ITS	16
-#define VGIC_LPI_MAX_INTID	((1 << INTERRUPT_ID_BITS_ITS) - 1)
-#define VGIC_PRI_BITS		5
+#define INTERRUPT_ID_BITS_SPIS 10
+#define INTERRUPT_ID_BITS_ITS 16
+#define VGIC_LPI_MAX_INTID ((1 << INTERRUPT_ID_BITS_ITS) - 1)
+#define VGIC_PRI_BITS 5
 
 #define vgic_irq_is_sgi(intid) ((intid) < VGIC_NR_SGIS)
 
@@ -30,69 +30,68 @@
 #define VGIC_AFFINITY_3_SHIFT 24
 #define VGIC_AFFINITY_3_MASK (0xffUL << VGIC_AFFINITY_3_SHIFT)
 
-#define VGIC_AFFINITY_LEVEL(reg, level) \
-	((((reg) & VGIC_AFFINITY_## level ##_MASK) \
-	>> VGIC_AFFINITY_## level ##_SHIFT) << MPIDR_LEVEL_SHIFT(level))
+#define VGIC_AFFINITY_LEVEL(reg, level)             \
+	((((reg) & VGIC_AFFINITY_##level##_MASK) >> \
+	  VGIC_AFFINITY_##level##_SHIFT)            \
+	 << MPIDR_LEVEL_SHIFT(level))
 
 /*
  * The Userspace encodes the affinity differently from the MPIDR,
  * Below macro converts vgic userspace format to MPIDR reg format.
  */
-#define VGIC_TO_MPIDR(val) (VGIC_AFFINITY_LEVEL(val, 0) | \
-			    VGIC_AFFINITY_LEVEL(val, 1) | \
-			    VGIC_AFFINITY_LEVEL(val, 2) | \
-			    VGIC_AFFINITY_LEVEL(val, 3))
+#define VGIC_TO_MPIDR(val)                                           \
+	(VGIC_AFFINITY_LEVEL(val, 0) | VGIC_AFFINITY_LEVEL(val, 1) | \
+	 VGIC_AFFINITY_LEVEL(val, 2) | VGIC_AFFINITY_LEVEL(val, 3))
 
 /*
  * As per Documentation/virt/kvm/devices/arm-vgic-v3.rst,
  * below macros are defined for CPUREG encoding.
  */
-#define KVM_REG_ARM_VGIC_SYSREG_OP0_MASK   0x000000000000c000
-#define KVM_REG_ARM_VGIC_SYSREG_OP0_SHIFT  14
-#define KVM_REG_ARM_VGIC_SYSREG_OP1_MASK   0x0000000000003800
-#define KVM_REG_ARM_VGIC_SYSREG_OP1_SHIFT  11
-#define KVM_REG_ARM_VGIC_SYSREG_CRN_MASK   0x0000000000000780
-#define KVM_REG_ARM_VGIC_SYSREG_CRN_SHIFT  7
-#define KVM_REG_ARM_VGIC_SYSREG_CRM_MASK   0x0000000000000078
-#define KVM_REG_ARM_VGIC_SYSREG_CRM_SHIFT  3
-#define KVM_REG_ARM_VGIC_SYSREG_OP2_MASK   0x0000000000000007
-#define KVM_REG_ARM_VGIC_SYSREG_OP2_SHIFT  0
+#define KVM_REG_ARM_VGIC_SYSREG_OP0_MASK 0x000000000000c000
+#define KVM_REG_ARM_VGIC_SYSREG_OP0_SHIFT 14
+#define KVM_REG_ARM_VGIC_SYSREG_OP1_MASK 0x0000000000003800
+#define KVM_REG_ARM_VGIC_SYSREG_OP1_SHIFT 11
+#define KVM_REG_ARM_VGIC_SYSREG_CRN_MASK 0x0000000000000780
+#define KVM_REG_ARM_VGIC_SYSREG_CRN_SHIFT 7
+#define KVM_REG_ARM_VGIC_SYSREG_CRM_MASK 0x0000000000000078
+#define KVM_REG_ARM_VGIC_SYSREG_CRM_SHIFT 3
+#define KVM_REG_ARM_VGIC_SYSREG_OP2_MASK 0x0000000000000007
+#define KVM_REG_ARM_VGIC_SYSREG_OP2_SHIFT 0
 
-#define KVM_DEV_ARM_VGIC_SYSREG_MASK (KVM_REG_ARM_VGIC_SYSREG_OP0_MASK | \
-				      KVM_REG_ARM_VGIC_SYSREG_OP1_MASK | \
-				      KVM_REG_ARM_VGIC_SYSREG_CRN_MASK | \
-				      KVM_REG_ARM_VGIC_SYSREG_CRM_MASK | \
-				      KVM_REG_ARM_VGIC_SYSREG_OP2_MASK)
+#define KVM_DEV_ARM_VGIC_SYSREG_MASK                                           \
+	(KVM_REG_ARM_VGIC_SYSREG_OP0_MASK | KVM_REG_ARM_VGIC_SYSREG_OP1_MASK | \
+	 KVM_REG_ARM_VGIC_SYSREG_CRN_MASK | KVM_REG_ARM_VGIC_SYSREG_CRM_MASK | \
+	 KVM_REG_ARM_VGIC_SYSREG_OP2_MASK)
 
 /*
  * As per Documentation/virt/kvm/devices/arm-vgic-its.rst,
  * below macros are defined for ITS table entry encoding.
  */
-#define KVM_ITS_CTE_VALID_SHIFT		63
-#define KVM_ITS_CTE_VALID_MASK		BIT_ULL(63)
-#define KVM_ITS_CTE_RDBASE_SHIFT	16
-#define KVM_ITS_CTE_ICID_MASK		GENMASK_ULL(15, 0)
-#define KVM_ITS_ITE_NEXT_SHIFT		48
-#define KVM_ITS_ITE_PINTID_SHIFT	16
-#define KVM_ITS_ITE_PINTID_MASK		GENMASK_ULL(47, 16)
-#define KVM_ITS_ITE_ICID_MASK		GENMASK_ULL(15, 0)
-#define KVM_ITS_DTE_VALID_SHIFT		63
-#define KVM_ITS_DTE_VALID_MASK		BIT_ULL(63)
-#define KVM_ITS_DTE_NEXT_SHIFT		49
-#define KVM_ITS_DTE_NEXT_MASK		GENMASK_ULL(62, 49)
-#define KVM_ITS_DTE_ITTADDR_SHIFT	5
-#define KVM_ITS_DTE_ITTADDR_MASK	GENMASK_ULL(48, 5)
-#define KVM_ITS_DTE_SIZE_MASK		GENMASK_ULL(4, 0)
-#define KVM_ITS_L1E_VALID_MASK		BIT_ULL(63)
+#define KVM_ITS_CTE_VALID_SHIFT 63
+#define KVM_ITS_CTE_VALID_MASK BIT_ULL(63)
+#define KVM_ITS_CTE_RDBASE_SHIFT 16
+#define KVM_ITS_CTE_ICID_MASK GENMASK_ULL(15, 0)
+#define KVM_ITS_ITE_NEXT_SHIFT 48
+#define KVM_ITS_ITE_PINTID_SHIFT 16
+#define KVM_ITS_ITE_PINTID_MASK GENMASK_ULL(47, 16)
+#define KVM_ITS_ITE_ICID_MASK GENMASK_ULL(15, 0)
+#define KVM_ITS_DTE_VALID_SHIFT 63
+#define KVM_ITS_DTE_VALID_MASK BIT_ULL(63)
+#define KVM_ITS_DTE_NEXT_SHIFT 49
+#define KVM_ITS_DTE_NEXT_MASK GENMASK_ULL(62, 49)
+#define KVM_ITS_DTE_ITTADDR_SHIFT 5
+#define KVM_ITS_DTE_ITTADDR_MASK GENMASK_ULL(48, 5)
+#define KVM_ITS_DTE_SIZE_MASK GENMASK_ULL(4, 0)
+#define KVM_ITS_L1E_VALID_MASK BIT_ULL(63)
 /* we only support 64 kB translation table page size */
-#define KVM_ITS_L1E_ADDR_MASK		GENMASK_ULL(51, 16)
+#define KVM_ITS_L1E_ADDR_MASK GENMASK_ULL(51, 16)
 
-#define KVM_VGIC_V3_RDIST_INDEX_MASK	GENMASK_ULL(11, 0)
-#define KVM_VGIC_V3_RDIST_FLAGS_MASK	GENMASK_ULL(15, 12)
-#define KVM_VGIC_V3_RDIST_FLAGS_SHIFT	12
-#define KVM_VGIC_V3_RDIST_BASE_MASK	GENMASK_ULL(51, 16)
-#define KVM_VGIC_V3_RDIST_COUNT_MASK	GENMASK_ULL(63, 52)
-#define KVM_VGIC_V3_RDIST_COUNT_SHIFT	52
+#define KVM_VGIC_V3_RDIST_INDEX_MASK GENMASK_ULL(11, 0)
+#define KVM_VGIC_V3_RDIST_FLAGS_MASK GENMASK_ULL(15, 12)
+#define KVM_VGIC_V3_RDIST_FLAGS_SHIFT 12
+#define KVM_VGIC_V3_RDIST_BASE_MASK GENMASK_ULL(51, 16)
+#define KVM_VGIC_V3_RDIST_COUNT_MASK GENMASK_ULL(63, 52)
+#define KVM_VGIC_V3_RDIST_COUNT_SHIFT 52
 
 #ifdef CONFIG_DEBUG_SPINLOCK
 #define DEBUG_SPINLOCK_BUG_ON(p) BUG_ON(p)
@@ -153,17 +152,17 @@ static inline int vgic_write_guest_lock(struct kvm *kvm, gpa_t gpa,
  * registers regardless of the hardware backed GIC used.
  */
 struct vgic_vmcr {
-	u32	grpen0;
-	u32	grpen1;
+	u32 grpen0;
+	u32 grpen1;
 
-	u32	ackctl;
-	u32	fiqen;
-	u32	cbpr;
-	u32	eoim;
+	u32 ackctl;
+	u32 fiqen;
+	u32 cbpr;
+	u32 eoim;
 
-	u32	abpr;
-	u32	bpr;
-	u32	pmr;  /* Priority mask field in the GICC_PMR and
+	u32 abpr;
+	u32 bpr;
+	u32 pmr; /* Priority mask field in the GICC_PMR and
 		       * ICC_PMR_EL1 priority field format */
 };
 
@@ -188,22 +187,21 @@ void vgic_irq_set_phys_active(struct vgic_irq *irq, bool active);
 bool vgic_queue_irq_unlock(struct kvm *kvm, struct vgic_irq *irq,
 			   unsigned long flags) __releases(&irq->irq_lock);
 void vgic_kick_vcpus(struct kvm *kvm);
-void vgic_irq_handle_resampling(struct vgic_irq *irq,
-				bool lr_deactivated, bool lr_pending);
+void vgic_irq_handle_resampling(struct vgic_irq *irq, bool lr_deactivated,
+				bool lr_pending);
 
-int vgic_check_iorange(struct kvm *kvm, phys_addr_t ioaddr,
-		       phys_addr_t addr, phys_addr_t alignment,
-		       phys_addr_t size);
+int vgic_check_iorange(struct kvm *kvm, phys_addr_t ioaddr, phys_addr_t addr,
+		       phys_addr_t alignment, phys_addr_t size);
 
 void vgic_v2_fold_lr_state(struct kvm_vcpu *vcpu);
 void vgic_v2_populate_lr(struct kvm_vcpu *vcpu, struct vgic_irq *irq, int lr);
 void vgic_v2_clear_lr(struct kvm_vcpu *vcpu, int lr);
 void vgic_v2_set_underflow(struct kvm_vcpu *vcpu);
 int vgic_v2_has_attr_regs(struct kvm_device *dev, struct kvm_device_attr *attr);
-int vgic_v2_dist_uaccess(struct kvm_vcpu *vcpu, bool is_write,
-			 int offset, u32 *val);
-int vgic_v2_cpuif_uaccess(struct kvm_vcpu *vcpu, bool is_write,
-			  int offset, u32 *val);
+int vgic_v2_dist_uaccess(struct kvm_vcpu *vcpu, bool is_write, int offset,
+			 u32 *val);
+int vgic_v2_cpuif_uaccess(struct kvm_vcpu *vcpu, bool is_write, int offset,
+			  u32 *val);
 void vgic_v2_set_vmcr(struct kvm_vcpu *vcpu, struct vgic_vmcr *vmcr);
 void vgic_v2_get_vmcr(struct kvm_vcpu *vcpu, struct vgic_vmcr *vmcr);
 void vgic_v2_enable(struct kvm_vcpu *vcpu);
@@ -260,13 +258,14 @@ void vgic_enable_lpis(struct kvm_vcpu *vcpu);
 void vgic_flush_pending_lpis(struct kvm_vcpu *vcpu);
 int vgic_its_inject_msi(struct kvm *kvm, struct kvm_msi *msi);
 int vgic_v3_has_attr_regs(struct kvm_device *dev, struct kvm_device_attr *attr);
-int vgic_v3_dist_uaccess(struct kvm_vcpu *vcpu, bool is_write,
-			 int offset, u32 *val);
-int vgic_v3_redist_uaccess(struct kvm_vcpu *vcpu, bool is_write,
-			 int offset, u32 *val);
+int vgic_v3_dist_uaccess(struct kvm_vcpu *vcpu, bool is_write, int offset,
+			 u32 *val);
+int vgic_v3_redist_uaccess(struct kvm_vcpu *vcpu, bool is_write, int offset,
+			   u32 *val);
 int vgic_v3_cpu_sysregs_uaccess(struct kvm_vcpu *vcpu,
 				struct kvm_device_attr *attr, bool is_write);
-int vgic_v3_has_cpu_sysregs_attr(struct kvm_vcpu *vcpu, struct kvm_device_attr *attr);
+int vgic_v3_has_cpu_sysregs_attr(struct kvm_vcpu *vcpu,
+				 struct kvm_device_attr *attr);
 int vgic_v3_line_level_info_uaccess(struct kvm_vcpu *vcpu, bool is_write,
 				    u32 intid, u32 *val);
 int kvm_register_vgic_device(unsigned long type);
@@ -288,14 +287,16 @@ static inline int vgic_v3_max_apr_idx(struct kvm_vcpu *vcpu)
 	 * restored ICC_CTLR_EL1 before restoring APnR registers.
 	 */
 	switch (cpu_if->num_pri_bits) {
-	case 7: return 3;
-	case 6: return 1;
-	default: return 0;
+	case 7:
+		return 3;
+	case 6:
+		return 1;
+	default:
+		return 0;
 	}
 }
 
-static inline bool
-vgic_v3_redist_region_full(struct vgic_redist_region *region)
+static inline bool vgic_v3_redist_region_full(struct vgic_redist_region *region)
 {
 	if (!region->count)
 		return false;
@@ -305,18 +306,20 @@ vgic_v3_redist_region_full(struct vgic_redist_region *region)
 
 struct vgic_redist_region *vgic_v3_rdist_free_slot(struct list_head *rdregs);
 
-static inline size_t
-vgic_v3_rd_region_size(struct kvm *kvm, struct vgic_redist_region *rdreg)
+static inline size_t vgic_v3_rd_region_size(struct kvm *kvm,
+					    struct vgic_redist_region *rdreg)
 {
 	if (!rdreg->count)
-		return atomic_read(&kvm->online_vcpus) * KVM_VGIC_V3_REDIST_SIZE;
+		return atomic_read(&kvm->online_vcpus) *
+		       KVM_VGIC_V3_REDIST_SIZE;
 	else
 		return rdreg->count * KVM_VGIC_V3_REDIST_SIZE;
 }
 
 struct vgic_redist_region *vgic_v3_rdist_region_from_index(struct kvm *kvm,
 							   u32 index);
-void vgic_v3_free_redist_region(struct kvm *kvm, struct vgic_redist_region *rdreg);
+void vgic_v3_free_redist_region(struct kvm *kvm,
+				struct vgic_redist_region *rdreg);
 
 bool vgic_v3_rdist_overlap(struct kvm *kvm, gpa_t base, size_t size);
 
@@ -325,12 +328,12 @@ static inline bool vgic_dist_overlap(struct kvm *kvm, gpa_t base, size_t size)
 	struct vgic_dist *d = &kvm->arch.vgic;
 
 	return (base + size > d->vgic_dist_base) &&
-		(base < d->vgic_dist_base + KVM_VGIC_V3_DIST_SIZE);
+	       (base < d->vgic_dist_base + KVM_VGIC_V3_DIST_SIZE);
 }
 
 bool vgic_lpis_enabled(struct kvm_vcpu *vcpu);
-int vgic_its_resolve_lpi(struct kvm *kvm, struct vgic_its *its,
-			 u32 devid, u32 eventid, struct vgic_irq **irq);
+int vgic_its_resolve_lpi(struct kvm *kvm, struct vgic_its *its, u32 devid,
+			 u32 eventid, struct vgic_irq **irq);
 struct vgic_its *vgic_msi_to_its(struct kvm *kvm, struct kvm_msi *msi);
 int vgic_its_inject_cached_translation(struct kvm *kvm, struct kvm_msi *msi);
 void vgic_its_invalidate_all_caches(struct kvm *kvm);

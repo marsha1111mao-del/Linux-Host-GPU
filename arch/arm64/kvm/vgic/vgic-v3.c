@@ -61,14 +61,16 @@ void vgic_v3_fold_lr_state(struct kvm_vcpu *vcpu)
 			intid = val & GICH_LR_VIRTUALID;
 			is_v2_sgi = vgic_irq_is_sgi(intid);
 		}
-
+		if (intid == 124 || intid == 125 || intid == 126){
+			pr_info("[MZH]lr_signals_eoi_mi:%d\tvgic_valid_spi:%d",lr_signals_eoi_mi(val),vgic_valid_spi(vcpu->kvm, intid));
+		}
 		/* Notify fds when the guest EOI'ed a level-triggered IRQ */
 		if (lr_signals_eoi_mi(val) && vgic_valid_spi(vcpu->kvm, intid))
 			kvm_notify_acked_irq(vcpu->kvm, 0,
 					     intid - VGIC_NR_PRIVATE_IRQS);
 
 		irq = vgic_get_irq(vcpu->kvm, vcpu, intid);
-		if (!irq)	/* An LPI could have been unmapped. */
+		if (!irq) /* An LPI could have been unmapped. */
 			continue;
 
 		raw_spin_lock(&irq->irq_lock);
@@ -96,7 +98,8 @@ void vgic_v3_fold_lr_state(struct kvm_vcpu *vcpu)
 			irq->pending_latch = false;
 
 		/* Handle resampling for mapped interrupts if required */
-		vgic_irq_handle_resampling(irq, deactivated, val & ICH_LR_PENDING_BIT);
+		vgic_irq_handle_resampling(irq, deactivated,
+					   val & ICH_LR_PENDING_BIT);
 
 		raw_spin_unlock(&irq->irq_lock);
 		vgic_put_irq(vcpu->kvm, irq);
@@ -201,7 +204,7 @@ void vgic_v3_set_vmcr(struct kvm_vcpu *vcpu, struct vgic_vmcr *vmcrp)
 
 	if (model == KVM_DEV_TYPE_ARM_VGIC_V2) {
 		vmcr = (vmcrp->ackctl << ICH_VMCR_ACK_CTL_SHIFT) &
-			ICH_VMCR_ACK_CTL_MASK;
+		       ICH_VMCR_ACK_CTL_MASK;
 		vmcr |= (vmcrp->fiqen << ICH_VMCR_FIQ_EN_SHIFT) &
 			ICH_VMCR_FIQ_EN_MASK;
 	} else {
@@ -233,9 +236,9 @@ void vgic_v3_get_vmcr(struct kvm_vcpu *vcpu, struct vgic_vmcr *vmcrp)
 
 	if (model == KVM_DEV_TYPE_ARM_VGIC_V2) {
 		vmcrp->ackctl = (vmcr & ICH_VMCR_ACK_CTL_MASK) >>
-			ICH_VMCR_ACK_CTL_SHIFT;
+				ICH_VMCR_ACK_CTL_SHIFT;
 		vmcrp->fiqen = (vmcr & ICH_VMCR_FIQ_EN_MASK) >>
-			ICH_VMCR_FIQ_EN_SHIFT;
+			       ICH_VMCR_FIQ_EN_SHIFT;
 	} else {
 		/*
 		 * When emulating GICv3 on GICv3 with SRE=1 on the
@@ -248,16 +251,16 @@ void vgic_v3_get_vmcr(struct kvm_vcpu *vcpu, struct vgic_vmcr *vmcrp)
 	vmcrp->cbpr = (vmcr & ICH_VMCR_CBPR_MASK) >> ICH_VMCR_CBPR_SHIFT;
 	vmcrp->eoim = (vmcr & ICH_VMCR_EOIM_MASK) >> ICH_VMCR_EOIM_SHIFT;
 	vmcrp->abpr = (vmcr & ICH_VMCR_BPR1_MASK) >> ICH_VMCR_BPR1_SHIFT;
-	vmcrp->bpr  = (vmcr & ICH_VMCR_BPR0_MASK) >> ICH_VMCR_BPR0_SHIFT;
-	vmcrp->pmr  = (vmcr & ICH_VMCR_PMR_MASK) >> ICH_VMCR_PMR_SHIFT;
+	vmcrp->bpr = (vmcr & ICH_VMCR_BPR0_MASK) >> ICH_VMCR_BPR0_SHIFT;
+	vmcrp->pmr = (vmcr & ICH_VMCR_PMR_MASK) >> ICH_VMCR_PMR_SHIFT;
 	vmcrp->grpen0 = (vmcr & ICH_VMCR_ENG0_MASK) >> ICH_VMCR_ENG0_SHIFT;
 	vmcrp->grpen1 = (vmcr & ICH_VMCR_ENG1_MASK) >> ICH_VMCR_ENG1_SHIFT;
 }
 
-#define INITIAL_PENDBASER_VALUE						  \
-	(GIC_BASER_CACHEABILITY(GICR_PENDBASER, INNER, RaWb)		| \
-	GIC_BASER_CACHEABILITY(GICR_PENDBASER, OUTER, SameAsInner)	| \
-	GIC_BASER_SHAREABILITY(GICR_PENDBASER, InnerShareable))
+#define INITIAL_PENDBASER_VALUE                                       \
+	(GIC_BASER_CACHEABILITY(GICR_PENDBASER, INNER, RaWb) |        \
+	 GIC_BASER_CACHEABILITY(GICR_PENDBASER, OUTER, SameAsInner) | \
+	 GIC_BASER_SHAREABILITY(GICR_PENDBASER, InnerShareable))
 
 void vgic_v3_enable(struct kvm_vcpu *vcpu)
 {
@@ -277,20 +280,20 @@ void vgic_v3_enable(struct kvm_vcpu *vcpu)
 	 * This goes with the spec allowing the value to be RAO/WI.
 	 */
 	if (vcpu->kvm->arch.vgic.vgic_model == KVM_DEV_TYPE_ARM_VGIC_V3) {
-		vgic_v3->vgic_sre = (ICC_SRE_EL1_DIB |
-				     ICC_SRE_EL1_DFB |
-				     ICC_SRE_EL1_SRE);
+		vgic_v3->vgic_sre =
+			(ICC_SRE_EL1_DIB | ICC_SRE_EL1_DFB | ICC_SRE_EL1_SRE);
 		vcpu->arch.vgic_cpu.pendbaser = INITIAL_PENDBASER_VALUE;
 	} else {
 		vgic_v3->vgic_sre = 0;
 	}
 
-	vcpu->arch.vgic_cpu.num_id_bits = (kvm_vgic_global_state.ich_vtr_el2 &
-					   ICH_VTR_ID_BITS_MASK) >>
-					   ICH_VTR_ID_BITS_SHIFT;
-	vcpu->arch.vgic_cpu.num_pri_bits = ((kvm_vgic_global_state.ich_vtr_el2 &
-					    ICH_VTR_PRI_BITS_MASK) >>
-					    ICH_VTR_PRI_BITS_SHIFT) + 1;
+	vcpu->arch.vgic_cpu.num_id_bits =
+		(kvm_vgic_global_state.ich_vtr_el2 & ICH_VTR_ID_BITS_MASK) >>
+		ICH_VTR_ID_BITS_SHIFT;
+	vcpu->arch.vgic_cpu.num_pri_bits =
+		((kvm_vgic_global_state.ich_vtr_el2 & ICH_VTR_PRI_BITS_MASK) >>
+		 ICH_VTR_PRI_BITS_SHIFT) +
+		1;
 
 	/* Get the show on the road... */
 	vgic_v3->vgic_hcr = ICH_HCR_EN;
@@ -422,7 +425,8 @@ int vgic_v3_save_pending_tables(struct kvm *kvm)
 		if (!vcpu)
 			continue;
 
-		pendbase = GICR_PENDBASER_ADDRESS(vcpu->arch.vgic_cpu.pendbaser);
+		pendbase =
+			GICR_PENDBASER_ADDRESS(vcpu->arch.vgic_cpu.pendbaser);
 
 		byte_offset = irq->intid / BITS_PER_BYTE;
 		bit_nr = irq->intid % BITS_PER_BYTE;
@@ -479,7 +483,7 @@ bool vgic_v3_rdist_overlap(struct kvm *kvm, gpa_t base, size_t size)
 
 	list_for_each_entry(rdreg, &d->rd_regions, list) {
 		if ((base + size > rdreg->base) &&
-			(base < rdreg->base + vgic_v3_rd_region_size(kvm, rdreg)))
+		    (base < rdreg->base + vgic_v3_rd_region_size(kvm, rdreg)))
 			return true;
 	}
 	return false;
@@ -501,8 +505,8 @@ bool vgic_v3_check_base(struct kvm *kvm)
 	list_for_each_entry(rdreg, &d->rd_regions, list) {
 		size_t sz = vgic_v3_rd_region_size(kvm, rdreg);
 
-		if (vgic_check_iorange(kvm, VGIC_ADDR_UNDEF,
-				       rdreg->base, SZ_64K, sz))
+		if (vgic_check_iorange(kvm, VGIC_ADDR_UNDEF, rdreg->base,
+				       SZ_64K, sz))
 			return false;
 	}
 
@@ -548,7 +552,6 @@ struct vgic_redist_region *vgic_v3_rdist_region_from_index(struct kvm *kvm,
 	}
 	return NULL;
 }
-
 
 int vgic_v3_map_resources(struct kvm *kvm)
 {
@@ -664,7 +667,8 @@ int vgic_v3_probe(const struct gic_kvm_info *info)
 	/* GICv4 support? */
 	if (info->has_v4) {
 		kvm_vgic_global_state.has_gicv4 = gicv4_enable;
-		kvm_vgic_global_state.has_gicv4_1 = info->has_v4_1 && gicv4_enable;
+		kvm_vgic_global_state.has_gicv4_1 = info->has_v4_1 &&
+						    gicv4_enable;
 		kvm_info("GICv4%s support %sabled\n",
 			 kvm_vgic_global_state.has_gicv4_1 ? ".1" : "",
 			 gicv4_enable ? "en" : "dis");
@@ -718,11 +722,10 @@ int vgic_v3_probe(const struct gic_kvm_info *info)
 	}
 
 	if (group0_trap || group1_trap || common_trap | dir_trap) {
-		kvm_info("GICv3 sysreg trapping enabled ([%s%s%s%s], reduced performance)\n",
-			 group0_trap ? "G0" : "",
-			 group1_trap ? "G1" : "",
-			 common_trap ? "C"  : "",
-			 dir_trap    ? "D"  : "");
+		kvm_info(
+			"GICv3 sysreg trapping enabled ([%s%s%s%s], reduced performance)\n",
+			group0_trap ? "G0" : "", group1_trap ? "G1" : "",
+			common_trap ? "C" : "", dir_trap ? "D" : "");
 		static_branch_enable(&vgic_v3_cpuif_trap);
 	}
 

@@ -9,11 +9,9 @@
 #include <linux/kvm_host.h>
 #include <linux/list_sort.h>
 #include <linux/nospec.h>
-
 #include <asm/kvm_emulate.h>
 #include <asm/kvm_hyp.h>
 #include <asm/rmi_smc.h>
-
 #include "vgic.h"
 
 #define CREATE_TRACE_POINTS
@@ -86,8 +84,7 @@ static struct vgic_irq *vgic_get_lpi(struct kvm *kvm, u32 intid)
  * struct vgic_irq. It also increases the refcount, so any caller is expected
  * to call vgic_put_irq() once it's finished with this IRQ.
  */
-struct vgic_irq *vgic_get_irq(struct kvm *kvm, struct kvm_vcpu *vcpu,
-			      u32 intid)
+struct vgic_irq *vgic_get_irq(struct kvm *kvm, struct kvm_vcpu *vcpu, u32 intid)
 {
 	/* SGIs and PPIs */
 	if (intid <= VGIC_MAX_PRIVATE) {
@@ -97,7 +94,8 @@ struct vgic_irq *vgic_get_irq(struct kvm *kvm, struct kvm_vcpu *vcpu,
 
 	/* SPIs */
 	if (intid < (kvm->arch.vgic.nr_spis + VGIC_NR_PRIVATE_IRQS)) {
-		intid = array_index_nospec(intid, kvm->arch.vgic.nr_spis + VGIC_NR_PRIVATE_IRQS);
+		intid = array_index_nospec(intid, kvm->arch.vgic.nr_spis +
+							  VGIC_NR_PRIVATE_IRQS);
 		return &kvm->arch.vgic.spis[intid - VGIC_NR_PRIVATE_IRQS];
 	}
 
@@ -158,8 +156,7 @@ void vgic_flush_pending_lpis(struct kvm_vcpu *vcpu)
 
 void vgic_irq_set_phys_pending(struct vgic_irq *irq, bool pending)
 {
-	WARN_ON(irq_set_irqchip_state(irq->host_irq,
-				      IRQCHIP_STATE_PENDING,
+	WARN_ON(irq_set_irqchip_state(irq->host_irq, IRQCHIP_STATE_PENDING,
 				      pending));
 }
 
@@ -172,8 +169,7 @@ bool vgic_get_phys_line_level(struct vgic_irq *irq)
 	if (irq->ops && irq->ops->get_input_level)
 		return irq->ops->get_input_level(irq->intid);
 
-	WARN_ON(irq_get_irqchip_state(irq->host_irq,
-				      IRQCHIP_STATE_PENDING,
+	WARN_ON(irq_get_irqchip_state(irq->host_irq, IRQCHIP_STATE_PENDING,
 				      &line_level));
 	return line_level;
 }
@@ -181,10 +177,8 @@ bool vgic_get_phys_line_level(struct vgic_irq *irq)
 /* Set/Clear the physical active state */
 void vgic_irq_set_phys_active(struct vgic_irq *irq, bool active)
 {
-
 	BUG_ON(!irq->hw);
-	WARN_ON(irq_set_irqchip_state(irq->host_irq,
-				      IRQCHIP_STATE_ACTIVE,
+	WARN_ON(irq_set_irqchip_state(irq->host_irq, IRQCHIP_STATE_ACTIVE,
 				      active));
 }
 
@@ -205,7 +199,7 @@ static struct kvm_vcpu *vgic_target_oracle(struct vgic_irq *irq)
 
 	/* If the interrupt is active, it must stay on the current vcpu */
 	if (irq->active)
-		return irq->vcpu ? : irq->target_vcpu;
+		return irq->vcpu ?: irq->target_vcpu;
 
 	/*
 	 * If the IRQ is not active but enabled and pending, we should direct
@@ -296,7 +290,8 @@ static void vgic_sort_ap_list(struct kvm_vcpu *vcpu)
  * rising edge, and in-kernel connected IRQ lines can only be controlled by
  * their owner.
  */
-static bool vgic_validate_injection(struct vgic_irq *irq, bool level, void *owner)
+static bool vgic_validate_injection(struct vgic_irq *irq, bool level,
+				    void *owner)
 {
 	if (irq->owner != owner)
 		return false;
@@ -426,6 +421,8 @@ retry:
 int kvm_vgic_inject_irq(struct kvm *kvm, struct kvm_vcpu *vcpu,
 			unsigned int intid, bool level, void *owner)
 {
+	if (intid == 124 || intid == 125 || intid == 126)
+		pr_info("[MZH]inject irq:%d", intid);
 	struct vgic_irq *irq;
 	unsigned long flags;
 	int ret;
@@ -462,11 +459,9 @@ int kvm_vgic_inject_irq(struct kvm *kvm, struct kvm_vcpu *vcpu,
 
 	return 0;
 }
-
 /* @irq->irq_lock must be held */
 static int kvm_vgic_map_irq(struct kvm_vcpu *vcpu, struct vgic_irq *irq,
-			    unsigned int host_irq,
-			    struct irq_ops *ops)
+			    unsigned int host_irq, struct irq_ops *ops)
 {
 	struct irq_desc *desc;
 	struct irq_data *data;
@@ -489,7 +484,6 @@ static int kvm_vgic_map_irq(struct kvm_vcpu *vcpu, struct vgic_irq *irq,
 	irq->ops = ops;
 	return 0;
 }
-
 /* @irq->irq_lock must be held */
 static inline void kvm_vgic_unmap_irq(struct vgic_irq *irq)
 {
@@ -682,7 +676,7 @@ retry:
 
 		raw_spin_lock(&vcpuA->arch.vgic_cpu.ap_list_lock);
 		raw_spin_lock_nested(&vcpuB->arch.vgic_cpu.ap_list_lock,
-				      SINGLE_DEPTH_NESTING);
+				     SINGLE_DEPTH_NESTING);
 		raw_spin_lock(&irq->irq_lock);
 
 		/*
@@ -727,8 +721,8 @@ static inline void vgic_fold_lr_state(struct kvm_vcpu *vcpu)
 }
 
 /* Requires the irq_lock to be held. */
-static inline void vgic_populate_lr(struct kvm_vcpu *vcpu,
-				    struct vgic_irq *irq, int lr)
+static inline void vgic_populate_lr(struct kvm_vcpu *vcpu, struct vgic_irq *irq,
+				    int lr)
 {
 	lockdep_assert_held(&irq->irq_lock);
 
@@ -755,8 +749,7 @@ static inline void vgic_set_underflow(struct kvm_vcpu *vcpu)
 }
 
 /* Requires the ap_list_lock to be held. */
-static int compute_ap_list_depth(struct kvm_vcpu *vcpu,
-				 bool *multi_sgi)
+static int compute_ap_list_depth(struct kvm_vcpu *vcpu, bool *multi_sgi)
 {
 	struct vgic_cpu *vgic_cpu = &vcpu->arch.vgic_cpu;
 	struct vgic_irq *irq;
@@ -831,7 +824,7 @@ static void vgic_flush_lr_state(struct kvm_vcpu *vcpu)
 	}
 
 	/* Nuke remaining LRs */
-	for (i = count ; i < kvm_vgic_global_state.nr_lr; i++)
+	for (i = count; i < kvm_vgic_global_state.nr_lr; i++)
 		vgic_clear_lr(vcpu, i);
 
 	if (!static_branch_unlikely(&kvm_vgic_global_state.gicv3_cpuif))
@@ -847,7 +840,8 @@ static inline bool can_access_vgic_from_kernel(void)
 	 * memory-mapped, and VHE systems can access GICv3 EL2 system
 	 * registers.
 	 */
-	return !static_branch_unlikely(&kvm_vgic_global_state.gicv3_cpuif) || has_vhe();
+	return !static_branch_unlikely(&kvm_vgic_global_state.gicv3_cpuif) ||
+	       has_vhe();
 }
 
 static inline void vgic_rmm_save_state(struct kvm_vcpu *vcpu)
@@ -958,7 +952,8 @@ void kvm_vgic_load(struct kvm_vcpu *vcpu)
 	if (unlikely(!irqchip_in_kernel(vcpu->kvm) ||
 		     !vgic_initialized(vcpu->kvm)) ||
 	    vcpu_is_rec(vcpu)) {
-		if (has_vhe() && static_branch_unlikely(&kvm_vgic_global_state.gicv3_cpuif))
+		if (has_vhe() &&
+		    static_branch_unlikely(&kvm_vgic_global_state.gicv3_cpuif))
 			__vgic_v3_activate_traps(&vcpu->arch.vgic_cpu.vgic_v3);
 		return;
 	}
@@ -974,8 +969,10 @@ void kvm_vgic_put(struct kvm_vcpu *vcpu)
 	if (unlikely(!irqchip_in_kernel(vcpu->kvm) ||
 		     !vgic_initialized(vcpu->kvm)) ||
 	    vcpu_is_rec(vcpu)) {
-		if (has_vhe() && static_branch_unlikely(&kvm_vgic_global_state.gicv3_cpuif))
-			__vgic_v3_deactivate_traps(&vcpu->arch.vgic_cpu.vgic_v3);
+		if (has_vhe() &&
+		    static_branch_unlikely(&kvm_vgic_global_state.gicv3_cpuif))
+			__vgic_v3_deactivate_traps(
+				&vcpu->arch.vgic_cpu.vgic_v3);
 		return;
 	}
 
@@ -1005,8 +1002,7 @@ int kvm_vgic_vcpu_pending_irq(struct kvm_vcpu *vcpu)
 
 	list_for_each_entry(irq, &vgic_cpu->ap_list_head, ap_list) {
 		raw_spin_lock(&irq->irq_lock);
-		pending = irq_is_pending(irq) && irq->enabled &&
-			  !irq->active &&
+		pending = irq_is_pending(irq) && irq->enabled && !irq->active &&
 			  irq->priority < vmcr.pmr;
 		raw_spin_unlock(&irq->irq_lock);
 
@@ -1074,20 +1070,54 @@ bool kvm_vgic_map_is_active(struct kvm_vcpu *vcpu, unsigned int vintid)
  * Another case is when the interrupt requires a helping hand on
  * deactivation (no HW deactivation, for example).
  */
-void vgic_irq_handle_resampling(struct vgic_irq *irq,
-				bool lr_deactivated, bool lr_pending)
+void vgic_irq_handle_resampling(struct vgic_irq *irq, bool lr_deactivated,
+				bool lr_pending)
 {
+	int intid = irq->intid;
+	int print_if = 0;
+	if (intid == 124 || intid == 125 || intid == 126) {
+		print_if = 1;
+	}
+	if (print_if == 1) {
+		pr_info("[MZH]resampling irq:%d", intid);
+	}
 	if (vgic_irq_is_mapped_level(irq)) {
+		if (print_if == 1) {
+			pr_info("[MZH]vgic_irq_is_mapped_level:%d", intid);
+			pr_info("[MZH]lr_pending:%d", lr_pending);
+			pr_info("[MZH]lr_deactivated:%d", lr_deactivated);
+			pr_info("[MZH]irq->active :%d", irq->active);
+			pr_info("[MZH]irq->pending_latch :%d",
+				irq->pending_latch);
+			pr_info("[MZH]irq->line_level:%d", irq->line_level);
+		}
 		bool resample = false;
 
 		if (unlikely(vgic_irq_needs_resampling(irq))) {
+			if (print_if == 1) {
+				pr_info("[MZH]vgic_irq_needs_resampling:%d",
+					intid);
+			}
 			resample = !(irq->active || irq->pending_latch);
 		} else if (lr_pending || (lr_deactivated && irq->line_level)) {
+			if (print_if == 1) {
+				pr_info("[MZH]don't need vgic_irq_needs_resampling:%d",
+					intid);
+			}
 			irq->line_level = vgic_get_phys_line_level(irq);
 			resample = !irq->line_level;
 		}
 
-		if (resample)
+		if (resample) {
+			if (print_if == 1) {
+				pr_info("[MZH][set_phys_active]hostid:%d\thwintid:%d,hw?%d",
+					irq->host_irq, irq->hwintid, irq->hw);
+			}
 			vgic_irq_set_phys_active(irq, false);
+		}
+		if (irq->host_irq) {
+			//pr_info("[MZH]enable_irq:%d", intid);
+			enable_irq(irq->host_irq);
+		}
 	}
 }

@@ -2408,7 +2408,7 @@ int kvm_set_mmio_region(struct kvm *kvm, struct kvm_mmio_region *mmio_region)
 	u64 offset = 0;
 	int ret;
 	int chunk = 0;
-	pr_info("[MZH] Mapping MMIO in chunks: addr=%llx size=%llx chunk=%llx",
+	pr_info("[MZH]Mapping MMIO in chunks: addr=%llx size=%llx chunk=%llx",
 		addr, size, chunk_size);
 	struct kvm_mmu_memory_cache cache = { .gfp_zero = __GFP_ZERO };
 	ret = kvm_mmu_topup_memory_cache(&cache, 5);
@@ -2422,11 +2422,11 @@ int kvm_set_mmio_region(struct kvm *kvm, struct kvm_mmio_region *mmio_region)
 		ret = kvm_pgtable_stage2_map(pgt, cur_addr, cur_size, cur_phys,
 					     prot, &cache, 0);
 		if (ret) {
-			pr_err("[MZH] Chunk map failed at offset %llx: %d",
+			pr_err("[MZH]Chunk map failed at offset %llx: %d",
 			       offset, ret);
 			return ret;
 		}
-		pr_info("[MZH] Mapping MMIO success: cur_addr=%llx\tcur_chunk=%d",
+		pr_info("[MZH]Mapping MMIO success: cur_addr=%llx\tcur_chunk=%d",
 			cur_addr, chunk);
 		offset += cur_size;
 		chunk += 1;

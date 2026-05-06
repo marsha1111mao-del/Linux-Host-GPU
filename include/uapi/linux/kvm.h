@@ -49,6 +49,13 @@ struct kvm_mmio_region {
 	__u64 memory_size;
 };
 
+/*for KVM_SET_IRQ_PASS*/
+struct kvm_irq_pass {
+	__u64 host_irq;
+	__u64 guest_irq;
+	__u64 irq_config; //level or edge
+};
+
 /*
  * The bit 0 ~ bit 15 of kvm_userspace_memory_region::flags are visible for
  * userspace, other bits are reserved for kvm internal use which are defined
@@ -1268,7 +1275,7 @@ struct kvm_vfio_spapr_tce {
 	_IOW(KVMIO, 0xb5, struct kvm_arm_counter_offset)
 #define KVM_ARM_GET_REG_WRITABLE_MASKS _IOR(KVMIO, 0xb6, struct reg_mask_range)
 #define KVM_SET_MMIO_REGION _IOR(KVMIO, 0xb7, struct kvm_mmio_region)
-
+#define KVM_SET_IRQ_PASS _IOR(KVMIO, 0xb8, struct kvm_irq_pass)
 /* ioctl for vm fd */
 #define KVM_CREATE_DEVICE _IOWR(KVMIO, 0xe0, struct kvm_create_device)
 

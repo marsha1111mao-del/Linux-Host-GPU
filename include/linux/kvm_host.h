@@ -1711,6 +1711,7 @@ static inline void kvm_unregister_perf_callbacks(void)
 int kvm_arch_init_vm(struct kvm *kvm, unsigned long type);
 int kvm_arch_set_mmio_region(struct kvm *kvm,
 			     struct kvm_mmio_region *mmio_region);
+// int kvm_arch_set_irq_pass(struct kvm *kvm, struct kvm_irq_pass *irq_pass);
 void kvm_arch_destroy_vm(struct kvm *kvm);
 void kvm_arch_sync_events(struct kvm *kvm);
 
