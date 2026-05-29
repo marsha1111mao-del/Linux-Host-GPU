@@ -108,6 +108,8 @@ modules.order
 !.get_maintainer.ignore
 !.gitattributes
 !.gitignore
+!.github/
+!.github/**
 !.kunitconfig
 !.mailmap
 !.rustfmt.toml
@@ -129,6 +131,8 @@ series
 
 # ctags files
 tags
+!tools/testing/selftests/arm64/tags/
+!tools/testing/selftests/arm64/tags/**
 TAGS
 
 # cscope files
