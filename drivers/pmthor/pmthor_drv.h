@@ -20,8 +20,10 @@ struct pmthor_irq {
 	int irq;
 	unsigned long hwintid;
 	char *name;
+	const char *label;
 	spinlock_t lock;
 	bool masked;
+	bool enabled;
 
 	struct eventfd_ctx *trigger;
 	struct virqfd *mask;
@@ -32,6 +34,8 @@ struct pmthor_irq {
 struct pmthor_device {
 	struct device *dev;
 	struct miscdevice miscdev; /* 必须包含这个，用于 container_of */
+	struct mutex owner_lock;
+	bool opened;
 
 	phys_addr_t phys_addr;
 	void __iomem *iomem;

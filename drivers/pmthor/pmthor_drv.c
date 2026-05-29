@@ -11,49 +11,114 @@
 #include <linux/uaccess.h>
 #include <linux/slab.h>
 #include <linux/eventfd.h>
+#include <linux/irq.h>
+#include <linux/iopoll.h>
 
 #include "pmthor_drv.h"
 #include "pmthor_regs.h"
 #include <asm/sysreg.h>
 
 #define VFIO_IRQ_CLEAN (1 << 6)
+#define PMTHOR_RESET_TIMEOUT_US 100000
+
+static void pmthor_hw_mask_and_clear_irqs(struct pmthor_device *ptdev)
+{
+	gpu_write(ptdev, JOB_INT_MASK, 0);
+	gpu_write(ptdev, MMU_INT_MASK, 0);
+	gpu_write(ptdev, GPU_INT_MASK, 0);
+
+	gpu_write(ptdev, JOB_INT_CLEAR, gpu_read(ptdev, JOB_INT_RAWSTAT));
+	gpu_write(ptdev, MMU_INT_CLEAR, gpu_read(ptdev, MMU_INT_RAWSTAT));
+	gpu_write(ptdev, GPU_INT_CLEAR, gpu_read(ptdev, GPU_INT_RAWSTAT));
+}
+
+static void pmthor_hw_quiesce(struct pmthor_device *ptdev, const char *reason)
+{
+	u32 status, raw_gpu, raw_job, raw_mmu;
+	int ret;
+
+	if (!ptdev->iomem)
+		return;
+
+	pmthor_hw_mask_and_clear_irqs(ptdev);
+
+	gpu_write(ptdev, MCU_CONTROL, MCU_CONTROL_DISABLE);
+	ret = readl_poll_timeout(ptdev->iomem + MCU_STATUS, status,
+				 status == MCU_STATUS_DISABLED, 10,
+				 PMTHOR_RESET_TIMEOUT_US);
+	if (ret) {
+		dev_warn(ptdev->dev,
+			 "pmthor: MCU did not stop during %s (status=%u), resetting GPU anyway\n",
+			 reason, status);
+	}
+
+	gpu_write(ptdev, GPU_INT_CLEAR, GPU_IRQ_RESET_COMPLETED);
+	gpu_write(ptdev, GPU_CMD, GPU_SOFT_RESET);
+	ret = readl_poll_timeout(ptdev->iomem + GPU_INT_RAWSTAT, status,
+				 status & GPU_IRQ_RESET_COMPLETED, 10,
+				 PMTHOR_RESET_TIMEOUT_US);
+	if (ret) {
+		dev_warn(ptdev->dev,
+			 "pmthor: soft reset timed out during %s, issuing hard reset\n",
+			 reason);
+		gpu_write(ptdev, GPU_CMD, GPU_HARD_RESET);
+		ret = readl_poll_timeout(ptdev->iomem + GPU_INT_RAWSTAT,
+					 status,
+					 status & GPU_IRQ_RESET_COMPLETED, 10,
+					 PMTHOR_RESET_TIMEOUT_US);
+		if (ret)
+			dev_warn(ptdev->dev,
+				 "pmthor: hard reset timed out during %s\n",
+				 reason);
+	}
+
+	pmthor_hw_mask_and_clear_irqs(ptdev);
+
+	raw_gpu = gpu_read(ptdev, GPU_INT_RAWSTAT);
+	raw_job = gpu_read(ptdev, JOB_INT_RAWSTAT);
+	raw_mmu = gpu_read(ptdev, MMU_INT_RAWSTAT);
+	dev_info(ptdev->dev,
+		 "pmthor: hardware quiesced for %s (mcu=%u gpu_raw=%#x job_raw=%#x mmu_raw=%#x)\n",
+		 reason, gpu_read(ptdev, MCU_STATUS), raw_gpu, raw_job,
+		 raw_mmu);
+}
+
+static void pmthor_irq_enable_locked(struct pmthor_irq *irq)
+{
+	if (!irq->enabled) {
+		enable_irq(irq->irq);
+		irq->enabled = true;
+	}
+}
+
+static void pmthor_irq_disable_locked(struct pmthor_irq *irq)
+{
+	if (irq->enabled) {
+		disable_irq_nosync(irq->irq);
+		irq->enabled = false;
+	}
+}
 
 static void pmthor_irq_release_trigger(struct pmthor_irq *irq)
 {
 	struct eventfd_ctx *trigger;
 	unsigned long flags;
-	bool masked;
 
 	spin_lock_irqsave(&irq->lock, flags);
 	trigger = irq->trigger;
-	masked = irq->masked;
+	irq->trigger = NULL;
+	irq->masked = false;
+	pmthor_irq_disable_locked(irq);
 	spin_unlock_irqrestore(&irq->lock, flags);
 
 	if (!trigger) {
-		if (masked) {
-			spin_lock_irqsave(&irq->lock, flags);
-			irq->masked = false;
-			spin_unlock_irqrestore(&irq->lock, flags);
-			enable_irq(irq->irq);
-		}
+		synchronize_irq(irq->irq);
 		return;
 	}
 
-	/*
-	 * If the IRQ is already masked, that disable depth becomes the
-	 * post-session disabled state.  Otherwise disable it to undo the
-	 * enable_irq() done when the trigger eventfd was installed.
-	 */
-	if (masked)
-		synchronize_irq(irq->irq);
-	else
-		disable_irq(irq->irq);
+	synchronize_irq(irq->irq);
 
-	spin_lock_irqsave(&irq->lock, flags);
-	irq->trigger = NULL;
-	irq->masked = false;
-	spin_unlock_irqrestore(&irq->lock, flags);
-
+	pr_info("pmthor: irq %s trigger fd cleared\n", irq->label);
 	eventfd_ctx_put(trigger);
 }
 
@@ -73,6 +138,8 @@ static void pmthor_vfio_irq_release_session(struct pmthor_device *ptdev)
 		if (irqs[i]->irq >= 0)
 			pmthor_irq_release_session(irqs[i]);
 	}
+
+	pmthor_hw_quiesce(ptdev, "session release");
 }
 
 static void pmthor_vfio_irq_cleanup(struct pmthor_device *ptdev)
@@ -131,26 +198,26 @@ int pmthor_clk_init(struct pmthor_device *ptdev)
 
 /* ====================== IRQ 基础操作 ====================== */
 
-static void pmthor_mask(struct pmthor_irq *irq_ctx)
+static void pmthor_mask(struct pmthor_irq *irq)
 {
 	unsigned long flags;
-	spin_lock_irqsave(&irq_ctx->lock, flags);
-	if (!irq_ctx->masked) {
-		disable_irq_nosync(irq_ctx->irq);
-		irq_ctx->masked = true;
-	}
-	spin_unlock_irqrestore(&irq_ctx->lock, flags);
+
+	spin_lock_irqsave(&irq->lock, flags);
+	irq->masked = true;
+	pmthor_irq_disable_locked(irq);
+	spin_unlock_irqrestore(&irq->lock, flags);
 }
 
-static void pmthor_unmask(struct pmthor_irq *irq_ctx)
+static void pmthor_unmask(struct pmthor_irq *irq)
 {
 	unsigned long flags;
-	spin_lock_irqsave(&irq_ctx->lock, flags);
-	if (irq_ctx->masked) {
-		enable_irq(irq_ctx->irq);
-		irq_ctx->masked = false;
+
+	spin_lock_irqsave(&irq->lock, flags);
+	if (irq->trigger) {
+		irq->masked = false;
+		pmthor_irq_enable_locked(irq);
 	}
-	spin_unlock_irqrestore(&irq_ctx->lock, flags);
+	spin_unlock_irqrestore(&irq->lock, flags);
 }
 
 static int pmthor_mask_handler(void *opaque, void *unused)
@@ -167,19 +234,19 @@ static int pmthor_unmask_handler(void *opaque, void *unused)
 static irqreturn_t pmthor_automasked_irq_handler(int irq, void *dev_id)
 {
 	struct pmthor_irq *irq_ctx = dev_id;
+	struct eventfd_ctx *trigger = NULL;
 	unsigned long flags;
-	bool signaled = false;
 
 	spin_lock_irqsave(&irq_ctx->lock, flags);
-	if (!irq_ctx->masked) {
-		disable_irq_nosync(irq_ctx->irq);
+	if (irq_ctx->trigger && !irq_ctx->masked) {
+		pmthor_irq_disable_locked(irq_ctx);
 		irq_ctx->masked = true;
-		signaled = true;
+		trigger = irq_ctx->trigger;
 	}
 	spin_unlock_irqrestore(&irq_ctx->lock, flags);
 
-	if (signaled && irq_ctx->trigger)
-		eventfd_signal(irq_ctx->trigger);
+	if (trigger)
+		eventfd_signal(trigger);
 
 	return IRQ_HANDLED;
 }
@@ -189,6 +256,7 @@ static irqreturn_t pmthor_automasked_irq_handler(int irq, void *dev_id)
 static int pmthor_set_trigger(struct pmthor_irq *irq, int fd)
 {
 	struct eventfd_ctx *trigger;
+	unsigned long flags;
 
 	pmthor_irq_release_trigger(irq);
 
@@ -199,20 +267,29 @@ static int pmthor_set_trigger(struct pmthor_irq *irq, int fd)
 	if (IS_ERR(trigger))
 		return PTR_ERR(trigger);
 
+	pr_info("pmthor: irq %s trigger fd installed\n", irq->label);
+
+	spin_lock_irqsave(&irq->lock, flags);
 	irq->trigger = trigger;
-	enable_irq(irq->irq);
+	irq->masked = false;
+	pmthor_irq_enable_locked(irq);
+	spin_unlock_irqrestore(&irq->lock, flags);
+
 	return 0;
 }
 
 static int pmthor_set_irq_mask(struct pmthor_irq *irq, int fd)
 {
 	if (fd >= 0) {
+		pr_info("pmthor: irq %s mask fd installed\n", irq->label);
 		return vfio_virqfd_enable(irq, pmthor_mask_handler, NULL, NULL,
 					  &irq->mask, fd);
 	}
 
-	if (fd < 0)
+	if (fd < 0) {
+		pr_info("pmthor: irq %s mask fd cleared\n", irq->label);
 		vfio_virqfd_disable(&irq->mask);
+	}
 
 	return 0;
 }
@@ -220,12 +297,15 @@ static int pmthor_set_irq_mask(struct pmthor_irq *irq, int fd)
 static int pmthor_set_irq_unmask(struct pmthor_irq *irq, int fd)
 {
 	if (fd >= 0) {
+		pr_info("pmthor: irq %s unmask fd installed\n", irq->label);
 		return vfio_virqfd_enable(irq, pmthor_unmask_handler, NULL,
 					  NULL, &irq->unmask, fd);
 	}
 
-	if (fd < 0)
+	if (fd < 0) {
+		pr_info("pmthor: irq %s unmask fd cleared\n", irq->label);
 		vfio_virqfd_disable(&irq->unmask);
+	}
 
 	return 0;
 }
@@ -246,6 +326,7 @@ static long pmthor_misc_ioctl(struct file *file, unsigned int cmd,
 		return -EFAULT;
 
 	if (hdr.flags & VFIO_IRQ_CLEAN) {
+		dev_dbg(ptdev->dev, "pmthor: clean irq session\n");
 		pmthor_vfio_irq_release_session(ptdev);
 		return 0;
 	}
@@ -294,9 +375,21 @@ static int pmthor_misc_open(struct inode *inode, struct file *file)
 	struct miscdevice *misc = file->private_data;
 	struct pmthor_device *ptdev =
 		container_of(misc, struct pmthor_device, miscdev);
+	int ret = 0;
 
-	/* 将 ptdev 存入 private_data 供以后的 ioctl 使用 */
+	mutex_lock(&ptdev->owner_lock);
+	if (ptdev->opened)
+		ret = -EBUSY;
+	else
+		ptdev->opened = true;
+	mutex_unlock(&ptdev->owner_lock);
+
+	if (ret)
+		return ret;
+
+	dev_info(ptdev->dev, "pmthor: /dev/pmthor opened\n");
 	file->private_data = ptdev;
+	pmthor_hw_quiesce(ptdev, "open");
 	return 0;
 }
 
@@ -305,6 +398,11 @@ static int pmthor_misc_release(struct inode *inode, struct file *file)
 	struct pmthor_device *ptdev = file->private_data;
 
 	pmthor_vfio_irq_release_session(ptdev);
+
+	mutex_lock(&ptdev->owner_lock);
+	ptdev->opened = false;
+	mutex_unlock(&ptdev->owner_lock);
+	dev_info(ptdev->dev, "pmthor: /dev/pmthor released\n");
 	return 0;
 }
 
@@ -336,7 +434,9 @@ static int pmthor_vfio_irq_init(struct pmthor_device *ptdev)
 			       names[i], irq->irq);
 			return irq->irq;
 		}
+		irq->label = names[i];
 		irq->masked = false;
+		irq->enabled = false;
 
 		irq->name = kasprintf(GFP_KERNEL, "pmthor-%s[%d]", names[i],
 				      irq->irq);
@@ -383,6 +483,7 @@ static int pmthor_probe(struct platform_device *pdev)
 	if (!ptdev)
 		return -ENOMEM;
 	ptdev->dev = &pdev->dev;
+	mutex_init(&ptdev->owner_lock);
 
 	// 1. 硬件资源初始化
 	ret = pmthor_clk_init(ptdev);
