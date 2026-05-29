@@ -16,6 +16,82 @@
 #include "pmthor_regs.h"
 #include <asm/sysreg.h>
 
+#define VFIO_IRQ_CLEAN (1 << 6)
+
+static void pmthor_irq_release_trigger(struct pmthor_irq *irq)
+{
+	struct eventfd_ctx *trigger;
+	unsigned long flags;
+	bool masked;
+
+	spin_lock_irqsave(&irq->lock, flags);
+	trigger = irq->trigger;
+	masked = irq->masked;
+	spin_unlock_irqrestore(&irq->lock, flags);
+
+	if (!trigger) {
+		if (masked) {
+			spin_lock_irqsave(&irq->lock, flags);
+			irq->masked = false;
+			spin_unlock_irqrestore(&irq->lock, flags);
+			enable_irq(irq->irq);
+		}
+		return;
+	}
+
+	/*
+	 * If the IRQ is already masked, that disable depth becomes the
+	 * post-session disabled state.  Otherwise disable it to undo the
+	 * enable_irq() done when the trigger eventfd was installed.
+	 */
+	if (masked)
+		synchronize_irq(irq->irq);
+	else
+		disable_irq(irq->irq);
+
+	spin_lock_irqsave(&irq->lock, flags);
+	irq->trigger = NULL;
+	irq->masked = false;
+	spin_unlock_irqrestore(&irq->lock, flags);
+
+	eventfd_ctx_put(trigger);
+}
+
+static void pmthor_irq_release_session(struct pmthor_irq *irq)
+{
+	vfio_virqfd_disable(&irq->mask);
+	vfio_virqfd_disable(&irq->unmask);
+	pmthor_irq_release_trigger(irq);
+}
+
+static void pmthor_vfio_irq_release_session(struct pmthor_device *ptdev)
+{
+	struct pmthor_irq *irqs[3] = { &ptdev->job_irq, &ptdev->mmu_irq,
+				       &ptdev->gpu_irq };
+
+	for (int i = 0; i < 3; i++) {
+		if (irqs[i]->irq >= 0)
+			pmthor_irq_release_session(irqs[i]);
+	}
+}
+
+static void pmthor_vfio_irq_cleanup(struct pmthor_device *ptdev)
+{
+	struct pmthor_irq *irqs[3] = { &ptdev->job_irq, &ptdev->mmu_irq,
+				       &ptdev->gpu_irq };
+
+	pmthor_vfio_irq_release_session(ptdev);
+
+	for (int i = 0; i < 3; i++) {
+		if (irqs[i]->irq >= 0) {
+			free_irq(irqs[i]->irq, irqs[i]);
+			irqs[i]->irq = -1;
+		}
+		kfree(irqs[i]->name);
+		irqs[i]->name = NULL;
+	}
+}
+
 int pmthor_pm_init(struct pmthor_device *ptdev)
 {
 	return dev_pm_domain_attach(ptdev->dev, true);
@@ -112,20 +188,45 @@ static irqreturn_t pmthor_automasked_irq_handler(int irq, void *dev_id)
 
 static int pmthor_set_trigger(struct pmthor_irq *irq, int fd)
 {
-	if (irq->trigger) {
-		disable_irq(irq->irq);
-		eventfd_ctx_put(irq->trigger);
-		irq->trigger = NULL;
-	}
+	struct eventfd_ctx *trigger;
+
+	pmthor_irq_release_trigger(irq);
 
 	if (fd < 0)
 		return 0;
 
-	irq->trigger = eventfd_ctx_fdget(fd);
-	if (IS_ERR(irq->trigger))
-		return PTR_ERR(irq->trigger);
+	trigger = eventfd_ctx_fdget(fd);
+	if (IS_ERR(trigger))
+		return PTR_ERR(trigger);
 
+	irq->trigger = trigger;
 	enable_irq(irq->irq);
+	return 0;
+}
+
+static int pmthor_set_irq_mask(struct pmthor_irq *irq, int fd)
+{
+	if (fd >= 0) {
+		return vfio_virqfd_enable(irq, pmthor_mask_handler, NULL, NULL,
+					  &irq->mask, fd);
+	}
+
+	if (fd < 0)
+		vfio_virqfd_disable(&irq->mask);
+
+	return 0;
+}
+
+static int pmthor_set_irq_unmask(struct pmthor_irq *irq, int fd)
+{
+	if (fd >= 0) {
+		return vfio_virqfd_enable(irq, pmthor_unmask_handler, NULL,
+					  NULL, &irq->unmask, fd);
+	}
+
+	if (fd < 0)
+		vfio_virqfd_disable(&irq->unmask);
+
 	return 0;
 }
 
@@ -143,12 +244,26 @@ static long pmthor_misc_ioctl(struct file *file, unsigned int cmd,
 		return -ENOTTY;
 	if (copy_from_user(&hdr, (void __user *)arg, sizeof(hdr)))
 		return -EFAULT;
-	if (hdr.index > 2 || hdr.count != 1)
+
+	if (hdr.flags & VFIO_IRQ_CLEAN) {
+		pmthor_vfio_irq_release_session(ptdev);
+		return 0;
+	}
+
+	if (hdr.index > 2)
 		return -EINVAL;
 
 	irq = (hdr.index == 0) ? &ptdev->job_irq :
 	      (hdr.index == 1) ? &ptdev->mmu_irq :
 				 &ptdev->gpu_irq;
+
+	if (hdr.count != 1) {
+		if (!hdr.count &&
+		    (hdr.flags & VFIO_IRQ_SET_ACTION_TYPE_MASK) ==
+			    VFIO_IRQ_SET_ACTION_TRIGGER)
+			return pmthor_set_trigger(irq, -1);
+		return -EINVAL;
+	}
 
 	if (hdr.flags & VFIO_IRQ_SET_DATA_EVENTFD) {
 		if (copy_from_user(&fd, (void __user *)(arg + sizeof(hdr)),
@@ -161,14 +276,12 @@ static long pmthor_misc_ioctl(struct file *file, unsigned int cmd,
 		return pmthor_set_trigger(irq, fd);
 	case VFIO_IRQ_SET_ACTION_MASK:
 		if (hdr.flags & VFIO_IRQ_SET_DATA_EVENTFD)
-			return vfio_virqfd_enable(irq, pmthor_mask_handler,
-						  NULL, NULL, &irq->mask, fd);
+			return pmthor_set_irq_mask(irq, fd);
 		pmthor_mask(irq);
 		return 0;
 	case VFIO_IRQ_SET_ACTION_UNMASK:
 		if (hdr.flags & VFIO_IRQ_SET_DATA_EVENTFD)
-			return vfio_virqfd_enable(irq, pmthor_unmask_handler,
-						  NULL, NULL, &irq->unmask, fd);
+			return pmthor_set_irq_unmask(irq, fd);
 		pmthor_unmask(irq);
 		return 0;
 	}
@@ -187,9 +300,18 @@ static int pmthor_misc_open(struct inode *inode, struct file *file)
 	return 0;
 }
 
+static int pmthor_misc_release(struct inode *inode, struct file *file)
+{
+	struct pmthor_device *ptdev = file->private_data;
+
+	pmthor_vfio_irq_release_session(ptdev);
+	return 0;
+}
+
 static const struct file_operations pmthor_misc_fops = {
 	.owner = THIS_MODULE,
 	.open = pmthor_misc_open,
+	.release = pmthor_misc_release,
 	.unlocked_ioctl = pmthor_misc_ioctl,
 	.compat_ioctl = pmthor_misc_ioctl,
 };
@@ -214,11 +336,14 @@ static int pmthor_vfio_irq_init(struct pmthor_device *ptdev)
 			       names[i], irq->irq);
 			return irq->irq;
 		}
+		irq->masked = false;
 
 		irq->name = kasprintf(GFP_KERNEL, "pmthor-%s[%d]", names[i],
 				      irq->irq);
-		if (!irq->name)
-			irq->name = "pmthor-fallback";
+		if (!irq->name) {
+			ret = -ENOMEM;
+			goto err;
+		}
 
 		// 添加 IRQF_TRIGGER_HIGH 标志
 		ret = request_irq(irq->irq, pmthor_automasked_irq_handler,
@@ -243,20 +368,7 @@ err:
 	}
 	return ret;
 }
-static void pmthor_vfio_irq_cleanup(struct pmthor_device *ptdev)
-{
-	struct pmthor_irq *irqs[3] = { &ptdev->job_irq, &ptdev->mmu_irq,
-				       &ptdev->gpu_irq };
-	for (int i = 0; i < 3; i++) {
-		vfio_virqfd_disable(&irqs[i]->mask);
-		vfio_virqfd_disable(&irqs[i]->unmask);
-		if (irqs[i]->trigger)
-			eventfd_ctx_put(irqs[i]->trigger);
-		if (irqs[i]->irq >= 0)
-			free_irq(irqs[i]->irq, irqs[i]);
-		kfree(irqs[i]->name);
-	}
-}
+
 
 /* ====================== Probe / Remove ====================== */
 static int pmthor_probe(struct platform_device *pdev)

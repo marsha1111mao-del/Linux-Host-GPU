@@ -18,7 +18,7 @@ struct virqfd;
 struct pmthor_irq {
 	u32 flags;
 	int irq;
-	int hwintid;
+	unsigned long hwintid;
 	char *name;
 	spinlock_t lock;
 	bool masked;
