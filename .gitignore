@@ -59,6 +59,7 @@ modules.order
 # Top-level generic files
 #
 /linux
+/out/
 /modules-only.symvers
 /vmlinux
 /vmlinux.32
