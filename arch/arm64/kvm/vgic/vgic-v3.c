@@ -61,9 +61,6 @@ void vgic_v3_fold_lr_state(struct kvm_vcpu *vcpu)
 			intid = val & GICH_LR_VIRTUALID;
 			is_v2_sgi = vgic_irq_is_sgi(intid);
 		}
-		if (intid == 124 || intid == 125 || intid == 126){
-			pr_info("[MZH]lr_signals_eoi_mi:%d\tvgic_valid_spi:%d",lr_signals_eoi_mi(val),vgic_valid_spi(vcpu->kvm, intid));
-		}
 		/* Notify fds when the guest EOI'ed a level-triggered IRQ */
 		if (lr_signals_eoi_mi(val) && vgic_valid_spi(vcpu->kvm, intid))
 			kvm_notify_acked_irq(vcpu->kvm, 0,

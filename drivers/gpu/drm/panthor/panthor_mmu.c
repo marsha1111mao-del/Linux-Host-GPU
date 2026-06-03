@@ -978,8 +978,8 @@ static int panthor_vm_map_pages(struct panthor_vm *vm, u64 iova, int prot,
 		len = min_t(size_t, len, size);
 		size -= len;
 
-		pr_info("[MZH][panthor_vm_map_pages]:iova=%llx, paddr=%p, len=%zx,prot=%llx",
-			iova, &paddr, len, prot);
+		pr_debug("[MZH][panthor_vm_map_pages]:iova=%llx, paddr=%pad, len=%zx, prot=%x\n",
+			 iova, &paddr, len, prot);
 
 		while (len) {
 			size_t pgcount, mapped = 0;
@@ -2297,7 +2297,7 @@ struct panthor_vm *panthor_vm_create(struct panthor_device *ptdev, bool for_mcu,
 				     u64 auto_kernel_va_start,
 				     u64 auto_kernel_va_size)
 {
-	pr_info("[MZH][PANTHOR] vm_create");
+	pr_debug("[MZH][PANTHOR] vm_create\n");
 	u32 va_bits = GPU_MMU_FEATURES_VA_BITS(ptdev->gpu_info.mmu_features);
 	u32 pa_bits = GPU_MMU_FEATURES_PA_BITS(ptdev->gpu_info.mmu_features);
 	u64 full_va_range = 1ull << va_bits;

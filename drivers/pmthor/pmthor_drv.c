@@ -13,6 +13,8 @@
 #include <linux/eventfd.h>
 #include <linux/irq.h>
 #include <linux/iopoll.h>
+#include <linux/ktime.h>
+#include <linux/math64.h>
 
 #include "pmthor_drv.h"
 #include "pmthor_regs.h"
@@ -20,6 +22,38 @@
 
 #define VFIO_IRQ_CLEAN (1 << 6)
 #define PMTHOR_RESET_TIMEOUT_US 100000
+
+static bool pmthor_irq_stats;
+module_param_named(irq_stats, pmthor_irq_stats, bool, 0644);
+MODULE_PARM_DESC(irq_stats,
+		 "Collect low-overhead pmthor IRQ forwarding timing stats");
+
+static void pmthor_irq_stats_reset_locked(struct pmthor_irq *irq)
+{
+	if (!pmthor_irq_stats)
+		return;
+
+	memset(&irq->stats, 0, sizeof(irq->stats));
+}
+
+static void pmthor_irq_stats_dump_snapshot(struct pmthor_irq *irq,
+					   const struct pmthor_irq_stats *stats)
+{
+	u64 avg_ns = 0;
+
+	if (!pmthor_irq_stats)
+		return;
+
+	if (stats->masked_samples)
+		avg_ns = div64_u64(stats->masked_total_ns,
+				   stats->masked_samples);
+
+	pr_info("pmthor: [MZH][PMTHOR_IRQ_STATS] label=%s signals=%llu unmask_events=%llu masked_samples=%llu unmask_without_signal=%llu ignored=%llu enable_calls=%llu disable_calls=%llu masked_avg_ns=%llu masked_max_ns=%llu pending=%u\n",
+		irq->label, stats->signals, stats->unmask_events,
+		stats->masked_samples, stats->unmask_without_signal,
+		stats->ignored, stats->enable_calls, stats->disable_calls,
+		avg_ns, stats->masked_max_ns, stats->signal_pending);
+}
 
 static void pmthor_hw_mask_and_clear_irqs(struct pmthor_device *ptdev)
 {
@@ -88,6 +122,8 @@ static void pmthor_irq_enable_locked(struct pmthor_irq *irq)
 	if (!irq->enabled) {
 		enable_irq(irq->irq);
 		irq->enabled = true;
+		if (pmthor_irq_stats)
+			irq->stats.enable_calls++;
 	}
 }
 
@@ -96,18 +132,26 @@ static void pmthor_irq_disable_locked(struct pmthor_irq *irq)
 	if (irq->enabled) {
 		disable_irq_nosync(irq->irq);
 		irq->enabled = false;
+		if (pmthor_irq_stats)
+			irq->stats.disable_calls++;
 	}
 }
 
 static void pmthor_irq_release_trigger(struct pmthor_irq *irq)
 {
 	struct eventfd_ctx *trigger;
+	struct pmthor_irq_stats stats;
+	bool dump_stats = false;
 	unsigned long flags;
 
 	spin_lock_irqsave(&irq->lock, flags);
 	trigger = irq->trigger;
 	irq->trigger = NULL;
 	irq->masked = false;
+	if (trigger && pmthor_irq_stats) {
+		stats = irq->stats;
+		dump_stats = true;
+	}
 	pmthor_irq_disable_locked(irq);
 	spin_unlock_irqrestore(&irq->lock, flags);
 
@@ -118,7 +162,9 @@ static void pmthor_irq_release_trigger(struct pmthor_irq *irq)
 
 	synchronize_irq(irq->irq);
 
-	pr_info("pmthor: irq %s trigger fd cleared\n", irq->label);
+	if (dump_stats)
+		pmthor_irq_stats_dump_snapshot(irq, &stats);
+	pr_debug("pmthor: irq %s trigger fd cleared\n", irq->label);
 	eventfd_ctx_put(trigger);
 }
 
@@ -211,8 +257,23 @@ static void pmthor_mask(struct pmthor_irq *irq)
 static void pmthor_unmask(struct pmthor_irq *irq)
 {
 	unsigned long flags;
+	u64 now = 0, delta;
 
 	spin_lock_irqsave(&irq->lock, flags);
+	if (pmthor_irq_stats) {
+		now = ktime_get_ns();
+		irq->stats.unmask_events++;
+		if (irq->stats.signal_pending) {
+			delta = now - irq->stats.last_signal_ns;
+			irq->stats.masked_samples++;
+			irq->stats.masked_total_ns += delta;
+			if (delta > irq->stats.masked_max_ns)
+				irq->stats.masked_max_ns = delta;
+			irq->stats.signal_pending = false;
+		} else {
+			irq->stats.unmask_without_signal++;
+		}
+	}
 	if (irq->trigger) {
 		irq->masked = false;
 		pmthor_irq_enable_locked(irq);
@@ -242,6 +303,13 @@ static irqreturn_t pmthor_automasked_irq_handler(int irq, void *dev_id)
 		pmthor_irq_disable_locked(irq_ctx);
 		irq_ctx->masked = true;
 		trigger = irq_ctx->trigger;
+		if (pmthor_irq_stats) {
+			irq_ctx->stats.signals++;
+			irq_ctx->stats.last_signal_ns = ktime_get_ns();
+			irq_ctx->stats.signal_pending = true;
+		}
+	} else if (pmthor_irq_stats) {
+		irq_ctx->stats.ignored++;
 	}
 	spin_unlock_irqrestore(&irq_ctx->lock, flags);
 
@@ -267,11 +335,12 @@ static int pmthor_set_trigger(struct pmthor_irq *irq, int fd)
 	if (IS_ERR(trigger))
 		return PTR_ERR(trigger);
 
-	pr_info("pmthor: irq %s trigger fd installed\n", irq->label);
+	pr_debug("pmthor: irq %s trigger fd installed\n", irq->label);
 
 	spin_lock_irqsave(&irq->lock, flags);
 	irq->trigger = trigger;
 	irq->masked = false;
+	pmthor_irq_stats_reset_locked(irq);
 	pmthor_irq_enable_locked(irq);
 	spin_unlock_irqrestore(&irq->lock, flags);
 
@@ -281,13 +350,13 @@ static int pmthor_set_trigger(struct pmthor_irq *irq, int fd)
 static int pmthor_set_irq_mask(struct pmthor_irq *irq, int fd)
 {
 	if (fd >= 0) {
-		pr_info("pmthor: irq %s mask fd installed\n", irq->label);
+		pr_debug("pmthor: irq %s mask fd installed\n", irq->label);
 		return vfio_virqfd_enable(irq, pmthor_mask_handler, NULL, NULL,
 					  &irq->mask, fd);
 	}
 
 	if (fd < 0) {
-		pr_info("pmthor: irq %s mask fd cleared\n", irq->label);
+		pr_debug("pmthor: irq %s mask fd cleared\n", irq->label);
 		vfio_virqfd_disable(&irq->mask);
 	}
 
@@ -297,13 +366,13 @@ static int pmthor_set_irq_mask(struct pmthor_irq *irq, int fd)
 static int pmthor_set_irq_unmask(struct pmthor_irq *irq, int fd)
 {
 	if (fd >= 0) {
-		pr_info("pmthor: irq %s unmask fd installed\n", irq->label);
+		pr_debug("pmthor: irq %s unmask fd installed\n", irq->label);
 		return vfio_virqfd_enable(irq, pmthor_unmask_handler, NULL,
 					  NULL, &irq->unmask, fd);
 	}
 
 	if (fd < 0) {
-		pr_info("pmthor: irq %s unmask fd cleared\n", irq->label);
+		pr_debug("pmthor: irq %s unmask fd cleared\n", irq->label);
 		vfio_virqfd_disable(&irq->unmask);
 	}
 
@@ -381,13 +450,13 @@ static int pmthor_misc_open(struct inode *inode, struct file *file)
 	if (ptdev->opened)
 		ret = -EBUSY;
 	else
-		ptdev->opened = true;
+		WRITE_ONCE(ptdev->opened, true);
 	mutex_unlock(&ptdev->owner_lock);
 
 	if (ret)
 		return ret;
 
-	dev_info(ptdev->dev, "pmthor: /dev/pmthor opened\n");
+	dev_dbg(ptdev->dev, "pmthor: /dev/pmthor opened\n");
 	file->private_data = ptdev;
 	pmthor_hw_quiesce(ptdev, "open");
 	return 0;
@@ -397,12 +466,13 @@ static int pmthor_misc_release(struct inode *inode, struct file *file)
 {
 	struct pmthor_device *ptdev = file->private_data;
 
+	mutex_lock(&ptdev->owner_lock);
+	WRITE_ONCE(ptdev->opened, false);
+	mutex_unlock(&ptdev->owner_lock);
+
 	pmthor_vfio_irq_release_session(ptdev);
 
-	mutex_lock(&ptdev->owner_lock);
-	ptdev->opened = false;
-	mutex_unlock(&ptdev->owner_lock);
-	dev_info(ptdev->dev, "pmthor: /dev/pmthor released\n");
+	dev_dbg(ptdev->dev, "pmthor: /dev/pmthor released\n");
 	return 0;
 }
 

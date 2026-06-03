@@ -421,8 +421,6 @@ retry:
 int kvm_vgic_inject_irq(struct kvm *kvm, struct kvm_vcpu *vcpu,
 			unsigned int intid, bool level, void *owner)
 {
-	if (intid == 124 || intid == 125 || intid == 126)
-		pr_info("[MZH]inject irq:%d", intid);
 	struct vgic_irq *irq;
 	unsigned long flags;
 	int ret;
@@ -1073,50 +1071,19 @@ bool kvm_vgic_map_is_active(struct kvm_vcpu *vcpu, unsigned int vintid)
 void vgic_irq_handle_resampling(struct vgic_irq *irq, bool lr_deactivated,
 				bool lr_pending)
 {
-	int intid = irq->intid;
-	int print_if = 0;
-	if (intid == 124 || intid == 125 || intid == 126) {
-		print_if = 1;
-	}
-	if (print_if == 1) {
-		pr_info("[MZH]resampling irq:%d", intid);
-	}
 	if (vgic_irq_is_mapped_level(irq)) {
-		if (print_if == 1) {
-			pr_info("[MZH]vgic_irq_is_mapped_level:%d", intid);
-			pr_info("[MZH]lr_pending:%d", lr_pending);
-			pr_info("[MZH]lr_deactivated:%d", lr_deactivated);
-			pr_info("[MZH]irq->active :%d", irq->active);
-			pr_info("[MZH]irq->pending_latch :%d",
-				irq->pending_latch);
-			pr_info("[MZH]irq->line_level:%d", irq->line_level);
-		}
 		bool resample = false;
 
 		if (unlikely(vgic_irq_needs_resampling(irq))) {
-			if (print_if == 1) {
-				pr_info("[MZH]vgic_irq_needs_resampling:%d",
-					intid);
-			}
 			resample = !(irq->active || irq->pending_latch);
 		} else if (lr_pending || (lr_deactivated && irq->line_level)) {
-			if (print_if == 1) {
-				pr_info("[MZH]don't need vgic_irq_needs_resampling:%d",
-					intid);
-			}
 			irq->line_level = vgic_get_phys_line_level(irq);
 			resample = !irq->line_level;
 		}
 
-		if (resample) {
-			if (print_if == 1) {
-				pr_info("[MZH][set_phys_active]hostid:%d\thwintid:%d,hw?%d",
-					irq->host_irq, irq->hwintid, irq->hw);
-			}
+		if (resample)
 			vgic_irq_set_phys_active(irq, false);
-		}
 		if (irq->host_irq) {
-			//pr_info("[MZH]enable_irq:%d", intid);
 			enable_irq(irq->host_irq);
 		}
 	}

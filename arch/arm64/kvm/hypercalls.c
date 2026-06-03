@@ -16,6 +16,8 @@
 #define KVM_ARM_SMCCC_VENDOR_HYP_FEATURES \
 	GENMASK(KVM_REG_ARM_VENDOR_HYP_BMAP_BIT_COUNT - 1, 0)
 
+#define KVM_GPA_TO_HPA_MAX_ENTRIES 512
+
 static void kvm_ptp_get_time(struct kvm_vcpu *vcpu, u64 *val)
 {
 	struct system_time_snapshot systime_snapshot;
@@ -98,7 +100,7 @@ static bool kvm_smccc_default_allowed(u32 func_id)
 static bool kvm_smccc_test_fw_bmap(struct kvm_vcpu *vcpu, u32 func_id)
 {
 	struct kvm_smccc_features *smccc_feat = &vcpu->kvm->arch.smccc_feat;
-	//pr_info("[MZH]func_id:%d", func_id);
+
 	switch (func_id) {
 	case ARM_SMCCC_TRNG_VERSION:
 	case ARM_SMCCC_TRNG_FEATURES:
@@ -268,7 +270,9 @@ static void kvm_prepare_hypercall_exit(struct kvm_vcpu *vcpu, u32 func_id)
 static void kvm_gpa_to_hpa(struct kvm_vcpu *vcpu, u64 *val)
 {
 	struct kvm *kvm = vcpu->kvm;
+	struct kvm_host_map map = { };
 	phys_addr_t gpa_array_gpa;
+	u64 *gpa_hpa_array;
 	u64 count;
 	u64 i;
 	int ret = 0;
@@ -276,68 +280,53 @@ static void kvm_gpa_to_hpa(struct kvm_vcpu *vcpu, u64 *val)
 	gpa_array_gpa = smccc_get_arg1(vcpu);
 	count = smccc_get_arg2(vcpu);
 
-	// pr_info("[MZH]kvm_gpa_to_hpa: array_gpa=0x%llx, count=%llu\n",
-	// 	gpa_array_gpa, count);
-
 	/* 基本参数校验 */
-	if (count == 0 || count > 512 || (gpa_array_gpa & 0x7)) {
+	if (count == 0 || count > KVM_GPA_TO_HPA_MAX_ENTRIES ||
+	    (gpa_array_gpa & 0x7)) {
 		val[0] = SMCCC_RET_INVALID_PARAMETER;
 		return;
 	}
 
+	ret = kvm_vcpu_map(vcpu, gpa_array_gpa >> PAGE_SHIFT, &map);
+	if (ret || !kvm_vcpu_mapped(&map)) {
+		val[0] = SMCCC_RET_INVALID_PARAMETER;
+		return;
+	}
+
+	gpa_hpa_array = map.hva + offset_in_page(gpa_array_gpa);
+
 	for (i = 0; i < count; i++) {
 		u64 current_gpa;
 		u64 hpa;
-		phys_addr_t element_gpa;
 		kvm_pfn_t pfn;
 		bool writable;
 
-		element_gpa = gpa_array_gpa + i * sizeof(u64);
-
-		/* 1. 从 guest中element_gpa处读 GPA */
-		ret = kvm_read_guest(kvm, element_gpa, &current_gpa,
-				     sizeof(current_gpa));
-		if (ret) {
-			pr_err("[MZH]Failed to read guest GPA @0x%pa\n",
-			       &element_gpa);
-			val[0] = SMCCC_RET_INVALID_PARAMETER;
-			return;
-		}
+		current_gpa = gpa_hpa_array[i];
 
 		/* GPA 对齐检查 */
 		if (current_gpa & ~PAGE_MASK) {
 			pr_err("[MZH]Unaligned GPA 0x%llx\n", current_gpa);
 			val[0] = SMCCC_RET_INVALID_PARAMETER;
-			return;
+			goto out_unmap;
 		}
 
-		// 2. 获取 pfn 并 **pin** 它
-		//   - 用 write=true  guest/GPU 可写该页面
 		pfn = gfn_to_pfn_prot(kvm, current_gpa >> PAGE_SHIFT, true,
 				      &writable);
-		// printk("[MZH] GPA 0x%llx -> writable=%d\n", current_gpa,
-		//        writable);
 		if (is_error_noslot_pfn(pfn)) {
 			pr_err("[MZH]No memslot for GPA 0x%llx\n", current_gpa);
 			val[0] = SMCCC_RET_INVALID_PARAMETER;
-			return;
+			goto out_unmap;
 		}
 
 		/* 3. 计算 HPA页内偏移 */
 		hpa = PFN_PHYS(pfn) | (current_gpa & ~PAGE_MASK);
-
-		/* 4. 写回 guest 数组 */
-		ret = kvm_write_guest(kvm, element_gpa, &hpa, sizeof(hpa));
-
-		if (ret) {
-			pr_err("[MZH]Failed to write HPA 0x%llx to GPA 0x%pa\n",
-			       hpa, &element_gpa);
-			val[0] = SMCCC_RET_INVALID_PARAMETER;
-			return;
-		}
+		gpa_hpa_array[i] = hpa;
 	}
 
 	val[0] = SMCCC_RET_SUCCESS;
+
+out_unmap:
+	kvm_vcpu_unmap(vcpu, &map, true);
 }
 
 int kvm_smccc_call_handler(struct kvm_vcpu *vcpu)

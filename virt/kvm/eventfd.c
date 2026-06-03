@@ -482,7 +482,7 @@ EXPORT_SYMBOL_GPL(kvm_irq_has_notifier);
 void kvm_notify_acked_gsi(struct kvm *kvm, int gsi)
 {
 	struct kvm_irq_ack_notifier *kian;
-	pr_info("[MZH][kvm_notify_acked_gsi]:%d", gsi);
+
 	hlist_for_each_entry_srcu(kian, &kvm->irq_ack_notifier_list, link,
 				  srcu_read_lock_held(&kvm->irq_srcu))
 		if (kian->gsi == gsi)
@@ -498,7 +498,6 @@ void kvm_notify_acked_irq(struct kvm *kvm, unsigned irqchip, unsigned pin)
 
 	idx = srcu_read_lock(&kvm->irq_srcu);
 	gsi = kvm_irq_map_chip_pin(kvm, irqchip, pin);
-	pr_info("[MZH][kvm_notify_acked_irq]:%d", gsi);
 	if (gsi != -1)
 		kvm_notify_acked_gsi(kvm, gsi);
 	srcu_read_unlock(&kvm->irq_srcu, idx);

@@ -303,18 +303,8 @@ static void __arm_lpae_init_pte(struct arm_lpae_io_pgtable *data,
 	for (i = 0; i < num_entries; i++) {
 		ptep[i] = pte | paddr_to_iopte(paddr + i * sz, data);
 		pte_val = ptep[i];
-		pr_info("[MZH][PTE] Guest PA=0x%llx → Raw HPA=0x%llx → PTE=0x%llx | %s-%s | %s (AP[2:1]=%d%d, XN=%llu)\n",
-			(u64)(paddr + i * sz), (u64)pte_val,
-			/* 位 6 判断 User/Privileged */
-			(pte_val & ARM_LPAE_PTE_AP_UNPRIV) ? "User" : "Priv",
-			/* 位 7 判断 RO/RW */
-			(pte_val & ARM_LPAE_PTE_AP_RDONLY) ? "RO" : "RW",
-			/* 位 53/54 判断执行权限 */
-			(pte_val & ARM_LPAE_PTE_XN) ? "NoExec" : "Exec",
-			/* 打印原始位以供双重检查 */
-			(int)!!(pte_val & ARM_LPAE_PTE_AP_RDONLY), // AP[2]
-			(int)!!(pte_val & ARM_LPAE_PTE_AP_UNPRIV), // AP[1]
-			(pte_val >> 53) & 0x3);
+		pr_debug("[MZH][PTE] paddr=%pa pte=%llx lvl=%d\n",
+			 &(phys_addr_t){ paddr + i * sz }, (u64)pte_val, lvl);
 	}
 
 	if (!cfg->coherent_walk)
@@ -534,7 +524,7 @@ static int arm_lpae_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 		return -EINVAL;
 
 	prot = arm_lpae_prot_to_pte(data, iommu_prot);
-	pr_info("[MZH][PANTHOR_MAP_PROT]:%llx", prot);
+	pr_debug("[MZH][PANTHOR_MAP_PROT]:%llx\n", prot);
 	ret = __arm_lpae_map(data, iova, paddr, pgsize, pgcount, prot, lvl,
 			     ptep, gfp, mapped);
 	/*

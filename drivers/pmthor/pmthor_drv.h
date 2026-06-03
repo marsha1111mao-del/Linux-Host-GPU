@@ -14,6 +14,20 @@
 /* 前向声明内核结构体指针 */
 struct virqfd;
 
+struct pmthor_irq_stats {
+	u64 signals;
+	u64 unmask_events;
+	u64 masked_samples;
+	u64 unmask_without_signal;
+	u64 ignored;
+	u64 enable_calls;
+	u64 disable_calls;
+	u64 masked_total_ns;
+	u64 masked_max_ns;
+	u64 last_signal_ns;
+	bool signal_pending;
+};
+
 /* 中断上下文结构 */
 struct pmthor_irq {
 	u32 flags;
@@ -24,6 +38,7 @@ struct pmthor_irq {
 	spinlock_t lock;
 	bool masked;
 	bool enabled;
+	struct pmthor_irq_stats stats;
 
 	struct eventfd_ctx *trigger;
 	struct virqfd *mask;
