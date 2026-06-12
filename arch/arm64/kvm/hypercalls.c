@@ -282,7 +282,15 @@ static void kvm_gpa_to_hpa(struct kvm_vcpu *vcpu, u64 *val)
 
 	/* 基本参数校验 */
 	if (count == 0 || count > KVM_GPA_TO_HPA_MAX_ENTRIES ||
-	    (gpa_array_gpa & 0x7)) {
+	    (gpa_array_gpa & 0x7) ||
+	    count > (PAGE_SIZE - offset_in_page(gpa_array_gpa)) / sizeof(*gpa_hpa_array)) {
+		val[0] = SMCCC_RET_INVALID_PARAMETER;
+		return;
+	}
+
+	if (kvm_mem_is_private(kvm, gpa_array_gpa >> PAGE_SHIFT)) {
+		pr_err_ratelimited("[MZH]Reject GPA_TO_HPA array in private memory gpa=0x%llx\n",
+				   gpa_array_gpa);
 		val[0] = SMCCC_RET_INVALID_PARAMETER;
 		return;
 	}
@@ -306,6 +314,13 @@ static void kvm_gpa_to_hpa(struct kvm_vcpu *vcpu, u64 *val)
 		/* GPA 对齐检查 */
 		if (current_gpa & ~PAGE_MASK) {
 			pr_err("[MZH]Unaligned GPA 0x%llx\n", current_gpa);
+			val[0] = SMCCC_RET_INVALID_PARAMETER;
+			goto out_unmap;
+		}
+
+		if (kvm_mem_is_private(kvm, current_gpa >> PAGE_SHIFT)) {
+			pr_err_ratelimited("[MZH]Reject GPA_TO_HPA private GPA 0x%llx\n",
+					   current_gpa);
 			val[0] = SMCCC_RET_INVALID_PARAMETER;
 			goto out_unmap;
 		}
