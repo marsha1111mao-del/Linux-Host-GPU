@@ -15,6 +15,10 @@
 #include <linux/iopoll.h>
 #include <linux/ktime.h>
 #include <linux/math64.h>
+#include <linux/pagemap.h>
+#include <linux/pmthor_gpu.h>
+#include <linux/sched/mm.h>
+#include <linux/xarray.h>
 
 #include "pmthor_drv.h"
 #include "pmthor_regs.h"
@@ -22,6 +26,122 @@
 
 #define VFIO_IRQ_CLEAN (1 << 6)
 #define PMTHOR_RESET_TIMEOUT_US 100000
+
+static DEFINE_MUTEX(pmthor_registry_lock);
+static struct pmthor_device *pmthor_registered_gpu;
+
+struct pmthor_gpu_session {
+	struct xarray pfns;
+	unsigned long pfn_count;
+	unsigned int vm_refs;
+	struct device *dev;
+};
+
+static int pmthor_hw_quiesce(struct pmthor_device *ptdev, const char *reason);
+
+/* Caller has reset the GPU after both the device and all VMs stopped. */
+static void pmthor_gpu_session_release(struct pmthor_device *ptdev)
+{
+	struct pmthor_gpu_session *session = ptdev->gpu_session;
+	unsigned long pfn, released = 0;
+	void *entry;
+
+	lockdep_assert_held(&ptdev->owner_lock);
+	if (!session)
+		return;
+	if (WARN_ON_ONCE(ptdev->opened || session->vm_refs))
+		return;
+
+	xa_for_each(&session->pfns, pfn, entry) {
+		struct page *page = pfn_to_page(pfn);
+
+		set_page_dirty_lock(page);
+		put_page(page);
+		if (!(++released % 1024))
+			cond_resched();
+	}
+	xa_destroy(&session->pfns);
+	dev_info(session->dev, "pmthor: released GPU page references=%lu\n",
+		 released);
+	ptdev->gpu_session = NULL;
+	put_device(session->dev);
+	kfree(session);
+}
+
+void pmthor_gpu_put_vm_session(struct pmthor_gpu_session *session)
+{
+	struct pmthor_device *ptdev;
+
+	if (!session)
+		return;
+	mutex_lock(&pmthor_registry_lock);
+	ptdev = pmthor_registered_gpu;
+	/* Active platform unbind is unsupported: retain pages fail-closed. */
+	if (!ptdev || ptdev->dev != session->dev)
+		goto out_registry;
+	mutex_lock(&ptdev->owner_lock);
+	if (WARN_ON_ONCE(ptdev->gpu_session != session || !session->vm_refs))
+		goto out_owner;
+	session->vm_refs--;
+	if (!session->vm_refs && !ptdev->opened) {
+		/*
+		 * A still-running VM could write GPU MMIO after device close.
+		 * Reset again after the last VM is gone, before releasing HPAs.
+		 * A failure leaves the session for a later open/reset to retry.
+		 */
+		if (!pmthor_hw_quiesce(ptdev, "last VM teardown"))
+			pmthor_gpu_session_release(ptdev);
+	}
+out_owner:
+	mutex_unlock(&ptdev->owner_lock);
+out_registry:
+	mutex_unlock(&pmthor_registry_lock);
+}
+EXPORT_SYMBOL_GPL(pmthor_gpu_put_vm_session);
+
+int pmthor_gpu_track_pfn(struct pmthor_gpu_session **vm_session,
+			 unsigned long pfn)
+{
+	struct pmthor_device *ptdev;
+	struct pmthor_gpu_session *session;
+	int ret = -ENODEV;
+
+	if (!pfn_valid(pfn) || PageReserved(pfn_to_page(pfn)))
+		return -EINVAL;
+
+	/* Registry lock keeps remove from freeing the device during lookup. */
+	mutex_lock(&pmthor_registry_lock);
+	ptdev = pmthor_registered_gpu;
+	if (!ptdev)
+		goto out_registry;
+
+	mutex_lock(&ptdev->owner_lock);
+	if (!ptdev->opened || ptdev->owner_mm != current->mm) {
+		ret = -EPERM;
+		goto out_owner;
+	}
+	session = ptdev->gpu_session;
+	if (*vm_session && *vm_session != session) {
+		ret = -EPERM;
+		goto out_owner;
+	}
+	if (!*vm_session) {
+		session->vm_refs++;
+		*vm_session = session;
+	}
+
+	ret = xa_insert(&session->pfns, pfn, xa_mk_value(1),
+			GFP_KERNEL_ACCOUNT);
+	if (!ret)
+		session->pfn_count++;
+
+out_owner:
+	mutex_unlock(&ptdev->owner_lock);
+out_registry:
+	mutex_unlock(&pmthor_registry_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pmthor_gpu_track_pfn);
 
 static bool pmthor_irq_stats;
 module_param_named(irq_stats, pmthor_irq_stats, bool, 0644);
@@ -66,13 +186,13 @@ static void pmthor_hw_mask_and_clear_irqs(struct pmthor_device *ptdev)
 	gpu_write(ptdev, GPU_INT_CLEAR, gpu_read(ptdev, GPU_INT_RAWSTAT));
 }
 
-static void pmthor_hw_quiesce(struct pmthor_device *ptdev, const char *reason)
+static int pmthor_hw_quiesce(struct pmthor_device *ptdev, const char *reason)
 {
 	u32 status, raw_gpu, raw_job, raw_mmu;
 	int ret;
 
 	if (!ptdev->iomem)
-		return;
+		return -ENODEV;
 
 	pmthor_hw_mask_and_clear_irqs(ptdev);
 
@@ -111,10 +231,17 @@ static void pmthor_hw_quiesce(struct pmthor_device *ptdev, const char *reason)
 	raw_gpu = gpu_read(ptdev, GPU_INT_RAWSTAT);
 	raw_job = gpu_read(ptdev, JOB_INT_RAWSTAT);
 	raw_mmu = gpu_read(ptdev, MMU_INT_RAWSTAT);
+	if (ret) {
+		dev_err(ptdev->dev,
+			"pmthor: GPU reset failed for %s; retaining page references\n",
+			reason);
+		return ret;
+	}
 	dev_info(ptdev->dev,
 		 "pmthor: hardware quiesced for %s (mcu=%u gpu_raw=%#x job_raw=%#x mmu_raw=%#x)\n",
 		 reason, gpu_read(ptdev, MCU_STATUS), raw_gpu, raw_job,
 		 raw_mmu);
+	return 0;
 }
 
 static void pmthor_irq_enable_locked(struct pmthor_irq *irq)
@@ -175,7 +302,7 @@ static void pmthor_irq_release_session(struct pmthor_irq *irq)
 	pmthor_irq_release_trigger(irq);
 }
 
-static void pmthor_vfio_irq_release_session(struct pmthor_device *ptdev)
+static int pmthor_vfio_irq_release_session(struct pmthor_device *ptdev)
 {
 	struct pmthor_irq *irqs[3] = { &ptdev->job_irq, &ptdev->mmu_irq,
 				       &ptdev->gpu_irq };
@@ -185,15 +312,15 @@ static void pmthor_vfio_irq_release_session(struct pmthor_device *ptdev)
 			pmthor_irq_release_session(irqs[i]);
 	}
 
-	pmthor_hw_quiesce(ptdev, "session release");
+	return pmthor_hw_quiesce(ptdev, "session release");
 }
 
-static void pmthor_vfio_irq_cleanup(struct pmthor_device *ptdev)
+static int pmthor_vfio_irq_cleanup(struct pmthor_device *ptdev)
 {
 	struct pmthor_irq *irqs[3] = { &ptdev->job_irq, &ptdev->mmu_irq,
 				       &ptdev->gpu_irq };
 
-	pmthor_vfio_irq_release_session(ptdev);
+	int ret = pmthor_vfio_irq_release_session(ptdev);
 
 	for (int i = 0; i < 3; i++) {
 		if (irqs[i]->irq >= 0) {
@@ -203,6 +330,7 @@ static void pmthor_vfio_irq_cleanup(struct pmthor_device *ptdev)
 		kfree(irqs[i]->name);
 		irqs[i]->name = NULL;
 	}
+	return ret;
 }
 
 int pmthor_pm_init(struct pmthor_device *ptdev)
@@ -396,8 +524,7 @@ static long pmthor_misc_ioctl(struct file *file, unsigned int cmd,
 
 	if (hdr.flags & VFIO_IRQ_CLEAN) {
 		dev_dbg(ptdev->dev, "pmthor: clean irq session\n");
-		pmthor_vfio_irq_release_session(ptdev);
-		return 0;
+		return pmthor_vfio_irq_release_session(ptdev);
 	}
 
 	if (hdr.index > 2)
@@ -444,36 +571,66 @@ static int pmthor_misc_open(struct inode *inode, struct file *file)
 	struct miscdevice *misc = file->private_data;
 	struct pmthor_device *ptdev =
 		container_of(misc, struct pmthor_device, miscdev);
+	struct pmthor_gpu_session *session;
 	int ret = 0;
 
-	mutex_lock(&ptdev->owner_lock);
-	if (ptdev->opened)
-		ret = -EBUSY;
-	else
-		WRITE_ONCE(ptdev->opened, true);
-	mutex_unlock(&ptdev->owner_lock);
+	if (!current->mm)
+		return -EINVAL;
 
+	mutex_lock(&ptdev->owner_lock);
+	if (ptdev->opened ||
+	    (ptdev->gpu_session && ptdev->gpu_session->vm_refs)) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+
+	ret = pmthor_hw_quiesce(ptdev, "open");
 	if (ret)
-		return ret;
+		goto out_unlock;
+
+	/* A failed reset at a previous close kept its references fail-closed. */
+	pmthor_gpu_session_release(ptdev);
+	session = kzalloc(sizeof(*session), GFP_KERNEL_ACCOUNT);
+	if (!session) {
+		ret = -ENOMEM;
+		goto out_unlock;
+	}
+	xa_init(&session->pfns);
+	session->dev = get_device(ptdev->dev);
+	ptdev->gpu_session = session;
+	ptdev->owner_mm = current->mm;
+	mmgrab(ptdev->owner_mm);
+	WRITE_ONCE(ptdev->opened, true);
 
 	dev_dbg(ptdev->dev, "pmthor: /dev/pmthor opened\n");
 	file->private_data = ptdev;
-	pmthor_hw_quiesce(ptdev, "open");
-	return 0;
+out_unlock:
+	mutex_unlock(&ptdev->owner_lock);
+	return ret;
 }
 
 static int pmthor_misc_release(struct inode *inode, struct file *file)
 {
 	struct pmthor_device *ptdev = file->private_data;
+	struct pmthor_gpu_session *session;
+	int ret;
 
 	mutex_lock(&ptdev->owner_lock);
+	session = ptdev->gpu_session;
+	ret = pmthor_vfio_irq_release_session(ptdev);
+	dev_info(ptdev->dev,
+		 "pmthor: GPU session closed pages=%lu vm_refs=%u\n",
+		 session->pfn_count, session->vm_refs);
+	mmdrop(ptdev->owner_mm);
+	ptdev->owner_mm = NULL;
 	WRITE_ONCE(ptdev->opened, false);
+	/* A live VM keeps the session exclusive and requires another reset. */
+	if (!ret && !session->vm_refs)
+		pmthor_gpu_session_release(ptdev);
 	mutex_unlock(&ptdev->owner_lock);
 
-	pmthor_vfio_irq_release_session(ptdev);
-
 	dev_dbg(ptdev->dev, "pmthor: /dev/pmthor released\n");
-	return 0;
+	return ret;
 }
 
 static const struct file_operations pmthor_misc_fops = {
@@ -596,6 +753,9 @@ static int pmthor_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, ptdev);
+	mutex_lock(&pmthor_registry_lock);
+	pmthor_registered_gpu = ptdev;
+	mutex_unlock(&pmthor_registry_lock);
 	dev_info(&pdev->dev, "pmthor successfully initialized at 0x%pa\n",
 		 &ptdev->phys_addr);
 	return 0;
@@ -604,11 +764,24 @@ static int pmthor_probe(struct platform_device *pdev)
 static void pmthor_remove(struct platform_device *pdev)
 {
 	struct pmthor_device *ptdev = platform_get_drvdata(pdev);
+	int ret;
+
 	if (!ptdev)
 		return;
 
+	mutex_lock(&pmthor_registry_lock);
+	pmthor_registered_gpu = NULL;
+	mutex_unlock(&pmthor_registry_lock);
 	misc_deregister(&ptdev->miscdev);
-	pmthor_vfio_irq_cleanup(ptdev);
+	mutex_lock(&ptdev->owner_lock);
+	ret = pmthor_vfio_irq_cleanup(ptdev);
+	if (!ret && !ptdev->opened && ptdev->gpu_session &&
+	    !ptdev->gpu_session->vm_refs)
+		pmthor_gpu_session_release(ptdev);
+	if (ptdev->gpu_session || ret)
+		dev_warn(ptdev->dev,
+			 "pmthor: removing active/unquiesced GPU; retaining page references\n");
+	mutex_unlock(&ptdev->owner_lock);
 	clk_disable_unprepare(ptdev->clks.core);
 	dev_pm_domain_detach(ptdev->dev, true);
 }

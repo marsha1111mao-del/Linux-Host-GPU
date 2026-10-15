@@ -3,6 +3,7 @@
 
 #include <linux/arm-smccc.h>
 #include <linux/kvm_host.h>
+#include <linux/pmthor_gpu.h>
 
 #include <asm/kvm_emulate.h>
 
@@ -333,6 +334,22 @@ static void kvm_gpa_to_hpa(struct kvm_vcpu *vcpu, u64 *val)
 			goto out_unmap;
 		}
 
+		/*
+		 * The GPU consumes raw HPAs, so keep the backing page alive
+		 * until the actual device session has stopped DMA. KVM teardown
+		 * can run before pmthor file release on process exit, so the
+		 * VM and device both hold the containing session alive.
+		 * A replaced memslot must not drop an older exposed PFN.
+		 */
+		ret = pmthor_gpu_track_pfn(&kvm->arch.gpu_session, pfn);
+		if (ret) {
+			kvm_release_pfn_clean(pfn);
+			if (ret != -EBUSY) {
+				val[0] = SMCCC_RET_INVALID_PARAMETER;
+				goto out_unmap;
+			}
+		}
+
 		/* 3. 计算 HPA页内偏移 */
 		hpa = PFN_PHYS(pfn) | (current_gpa & ~PAGE_MASK);
 		gpa_hpa_array[i] = hpa;
@@ -487,10 +504,12 @@ void kvm_arm_init_hypercalls(struct kvm *kvm)
 	smccc_feat->vendor_hyp_bmap = KVM_ARM_SMCCC_VENDOR_HYP_FEATURES;
 
 	mt_init(&kvm->arch.smccc_filter);
+	kvm->arch.gpu_session = NULL;
 }
 
 void kvm_arm_teardown_hypercalls(struct kvm *kvm)
 {
+	pmthor_gpu_put_vm_session(kvm->arch.gpu_session);
 	mtree_destroy(&kvm->arch.smccc_filter);
 }
 

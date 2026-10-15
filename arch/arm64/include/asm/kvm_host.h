@@ -361,6 +361,7 @@ struct kvm_arch {
 	/* Hypercall features firmware registers' descriptor */
 	struct kvm_smccc_features smccc_feat;
 	struct maple_tree smccc_filter;
+	struct pmthor_gpu_session *gpu_session;
 
 	/*
 	 * Emulated CPU ID registers per VM

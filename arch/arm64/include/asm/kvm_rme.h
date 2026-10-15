@@ -118,6 +118,12 @@ int realm_map_non_secure(struct realm *realm,
 			 struct page *page,
 			 unsigned long map_size,
 			 struct kvm_mmu_memory_cache *memcache);
+int realm_map_non_secure_phys(struct realm *realm,
+			      unsigned long ipa,
+			      phys_addr_t phys,
+			      unsigned long map_size,
+			      unsigned long memattr,
+			      struct kvm_mmu_memory_cache *memcache);
 int realm_set_ipa_state(struct kvm_vcpu *vcpu,
 			unsigned long addr, unsigned long end,
 			unsigned long ripas,

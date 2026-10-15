@@ -13,6 +13,8 @@
 
 /* 前向声明内核结构体指针 */
 struct virqfd;
+struct mm_struct;
+struct pmthor_gpu_session;
 
 struct pmthor_irq_stats {
 	u64 signals;
@@ -51,6 +53,8 @@ struct pmthor_device {
 	struct miscdevice miscdev; /* 必须包含这个，用于 container_of */
 	struct mutex owner_lock;
 	bool opened;
+	struct mm_struct *owner_mm;
+	struct pmthor_gpu_session *gpu_session;
 
 	phys_addr_t phys_addr;
 	void __iomem *iomem;

@@ -2397,9 +2397,7 @@ void kvm_toggle_cache(struct kvm_vcpu *vcpu, bool was_enabled)
 int kvm_set_mmio_region(struct kvm *kvm, struct kvm_mmio_region *mmio_region)
 {
 	struct kvm_s2_mmu *mmu = &kvm->arch.mmu;
-	struct kvm_pgtable *pgt = mmu->pgt;
-	if (!pgt)
-		return -ENOENT;
+	struct kvm_pgtable *pgt;
 	enum kvm_pgtable_prot prot = KVM_PGTABLE_PROT_R | KVM_PGTABLE_PROT_W |
 				     KVM_PGTABLE_PROT_DEVICE;
 	u64 addr = mmio_region->guest_phys_addr;
@@ -2408,9 +2406,69 @@ int kvm_set_mmio_region(struct kvm *kvm, struct kvm_mmio_region *mmio_region)
 	u64 offset = 0;
 	int ret;
 	int chunk = 0;
+	struct kvm_mmu_memory_cache cache = { .gfp_zero = __GFP_ZERO };
+
+	if (kvm_is_realm(kvm)) {
+		struct realm *realm = &kvm->arch.realm;
+		u64 shared_bit = BIT_ULL(realm->ia_bits - 1);
+		unsigned long memattr = PTE_S2_MEMATTR(MT_S2_FWB_DEVICE_nGnRE);
+
+		if (addr >= shared_bit || size > shared_bit ||
+		    addr + size < addr || addr + size > shared_bit)
+			return -EINVAL;
+
+		pr_info("[MZH]Mapping Realm MMIO shared alias: addr=%llx shared=%llx size=%llx chunk=%llx",
+			addr, addr | shared_bit, size, chunk_size);
+
+		ret = kvm_mmu_topup_memory_cache(&cache, 5);
+		if (ret)
+			return ret;
+
+		while (offset < size) {
+			u64 cur_addr = addr + offset;
+			u64 cur_ipa = cur_addr | shared_bit;
+			u64 remaining = size - offset;
+			u64 cur_size;
+
+			if (remaining >= chunk_size &&
+			    IS_ALIGNED(cur_addr, chunk_size) &&
+			    IS_ALIGNED(cur_ipa, chunk_size))
+				cur_size = chunk_size;
+			else
+				cur_size = PAGE_SIZE;
+
+			ret = kvm_mmu_topup_memory_cache(&cache, 5);
+			if (ret) {
+				kvm_mmu_free_memory_cache(&cache);
+				return ret;
+			}
+
+			ret = realm_map_non_secure_phys(realm, cur_ipa, cur_addr,
+							cur_size, memattr, &cache);
+			if (ret) {
+				pr_err("[MZH]Realm MMIO map failed at offset %llx: %d",
+				       offset, ret);
+				kvm_mmu_free_memory_cache(&cache);
+				return ret;
+			}
+
+			pr_info("[MZH]Realm MMIO map success: ipa=%llx phys=%llx chunk=%d",
+				cur_ipa, cur_addr, chunk);
+			offset += cur_size;
+			chunk += 1;
+		}
+
+		kvm_mmu_free_memory_cache(&cache);
+		kvm_flush_remote_tlbs(kvm);
+		return 0;
+	}
+
+	pgt = mmu->pgt;
+	if (!pgt)
+		return -ENOENT;
+
 	pr_info("[MZH]Mapping MMIO in chunks: addr=%llx size=%llx chunk=%llx",
 		addr, size, chunk_size);
-	struct kvm_mmu_memory_cache cache = { .gfp_zero = __GFP_ZERO };
 	ret = kvm_mmu_topup_memory_cache(&cache, 5);
 	if (ret)
 		return ret;
@@ -2424,6 +2482,7 @@ int kvm_set_mmio_region(struct kvm *kvm, struct kvm_mmio_region *mmio_region)
 		if (ret) {
 			pr_err("[MZH]Chunk map failed at offset %llx: %d",
 			       offset, ret);
+			kvm_mmu_free_memory_cache(&cache);
 			return ret;
 		}
 		pr_info("[MZH]Mapping MMIO success: cur_addr=%llx\tcur_chunk=%d",
@@ -2431,6 +2490,7 @@ int kvm_set_mmio_region(struct kvm *kvm, struct kvm_mmio_region *mmio_region)
 		offset += cur_size;
 		chunk += 1;
 	}
+	kvm_mmu_free_memory_cache(&cache);
 	kvm_flush_remote_tlbs(kvm);
 	return 0;
 }

@@ -864,11 +864,22 @@ int realm_map_non_secure(struct realm *realm,
 			 unsigned long map_size,
 			 struct kvm_mmu_memory_cache *memcache)
 {
+	return realm_map_non_secure_phys(realm, ipa, page_to_phys(page),
+					 map_size, PTE_S2_MEMATTR(MT_S2_FWB_NORMAL),
+					 memcache);
+}
+
+int realm_map_non_secure_phys(struct realm *realm,
+			      unsigned long ipa,
+			      phys_addr_t phys,
+			      unsigned long map_size,
+			      unsigned long memattr,
+			      struct kvm_mmu_memory_cache *memcache)
+{
 	phys_addr_t rd = virt_to_phys(realm->rd);
 	int map_level;
 	int ret = 0;
-	unsigned long desc = page_to_phys(page) |
-			     PTE_S2_MEMATTR(MT_S2_FWB_NORMAL) |
+	unsigned long desc = phys | memattr |
 			     /* FIXME: Read+Write permissions for now */
 			     (3 << 6);
 
