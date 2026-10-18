@@ -10,6 +10,9 @@
  * binding the VM to that session on its first translation.
  * Zero consumes the reference; -EBUSY means it is already tracked, and all
  * negative returns leave the caller responsible for its extra reference.
+ * Each newly tracked page also receives a DMA mapping, which must equal its
+ * raw HPA. Duplicate references do not repeat DMA/cache preparation. Mappings
+ * are retained until the quiesced session releases the corresponding pages.
  * References remain until both the VM and the successfully reset device
  * session have released their ownership, in either teardown order. Device
  * close cannot admit a new owner while a bound VM lives; the last VM teardown

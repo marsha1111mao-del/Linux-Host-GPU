@@ -777,6 +777,8 @@ static void vgic_flush_lr_state(struct kvm_vcpu *vcpu)
 	struct vgic_cpu *vgic_cpu = &vcpu->arch.vgic_cpu;
 	struct vgic_irq *irq;
 	int count;
+	/* RMM owns the final LR for authenticated Realm IPC. */
+	int host_lrs = kvm_vgic_global_state.nr_lr - (vcpu_is_rec(vcpu) ? 1 : 0);
 	bool multi_sgi;
 	u8 prio = 0xff;
 	int i = 0;
@@ -784,7 +786,7 @@ static void vgic_flush_lr_state(struct kvm_vcpu *vcpu)
 	lockdep_assert_held(&vgic_cpu->ap_list_lock);
 
 	count = compute_ap_list_depth(vcpu, &multi_sgi);
-	if (count > kvm_vgic_global_state.nr_lr || multi_sgi)
+	if (count > host_lrs || multi_sgi)
 		vgic_sort_ap_list(vcpu);
 
 	count = 0;
@@ -813,7 +815,7 @@ static void vgic_flush_lr_state(struct kvm_vcpu *vcpu)
 
 		raw_spin_unlock(&irq->irq_lock);
 
-		if (count == kvm_vgic_global_state.nr_lr) {
+		if (count == host_lrs) {
 			if (!list_is_last(&irq->ap_list,
 					  &vgic_cpu->ap_list_head))
 				vgic_set_underflow(vcpu);

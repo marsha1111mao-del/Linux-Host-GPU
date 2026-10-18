@@ -191,6 +191,8 @@ struct rec_enter {
 #define RMI_EXIT_RIPAS_CHANGE		0x04
 #define RMI_EXIT_HOST_CALL		0x05
 #define RMI_EXIT_SERROR			0x06
+/* Experimental RMM IPC scheduling hint; no interrupt contents supplied. */
+#define RMI_EXIT_OPENCCA_XSHM		0x70
 
 struct rec_exit {
 	union { /* 0x000 */

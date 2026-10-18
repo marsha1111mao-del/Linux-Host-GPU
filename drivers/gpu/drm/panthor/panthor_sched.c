@@ -1679,6 +1679,14 @@ static void process_fw_events_work(struct work_struct *work)
 						      fw_events_work);
 	u32 events = atomic_xchg(&sched->fw_events, 0);
 	struct panthor_device *ptdev = sched->ptdev;
+	int cookie;
+
+	/* Unplug releases the FW interface mappings before the scheduler
+	 * workqueue is destroyed. Drain an already running reader before that
+	 * release and reject events queued after unplug has begun.
+	 */
+	if (!drm_dev_enter(&ptdev->base, &cookie))
+		return;
 
 	mutex_lock(&sched->lock);
 
@@ -1695,6 +1703,7 @@ static void process_fw_events_work(struct work_struct *work)
 	}
 
 	mutex_unlock(&sched->lock);
+	drm_dev_exit(cookie);
 }
 
 /**

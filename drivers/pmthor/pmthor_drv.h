@@ -55,6 +55,7 @@ struct pmthor_device {
 	bool opened;
 	struct mm_struct *owner_mm;
 	struct pmthor_gpu_session *gpu_session;
+	struct devfreq *devfreq;
 
 	phys_addr_t phys_addr;
 	void __iomem *iomem;

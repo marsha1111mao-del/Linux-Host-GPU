@@ -198,6 +198,9 @@ int handle_rec_exit(struct kvm_vcpu *vcpu, int rec_run_ret)
 		return rec_exit_ripas_change(vcpu);
 	case RMI_EXIT_HOST_CALL:
 		return rec_exit_host_call(vcpu);
+	case RMI_EXIT_OPENCCA_XSHM:
+		kvm_realm_xshm_wake(rec->run->exit.gprs[0]);
+		return 1;
 	}
 
 	kvm_pr_unimpl("Unsupported exit reason: %u\n",

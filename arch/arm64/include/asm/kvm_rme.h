@@ -80,6 +80,7 @@ struct realm {
  * @run: Kernel VA of the RmiRecRun structure shared with the RMM
  */
 struct realm_rec {
+	atomic_t xshm_wake_pending;
 	unsigned long mpidr;
 	void *rec_page;
 	struct page *aux_pages[REC_PARAMS_AUX_GRANULES];
@@ -102,6 +103,7 @@ int kvm_create_rec(struct kvm_vcpu *vcpu);
 void kvm_destroy_rec(struct kvm_vcpu *vcpu);
 
 int kvm_rec_enter(struct kvm_vcpu *vcpu);
+void kvm_realm_xshm_wake(phys_addr_t target_rd);
 int handle_rec_exit(struct kvm_vcpu *vcpu, int rec_run_status);
 
 void kvm_realm_unmap_range(struct kvm *kvm,

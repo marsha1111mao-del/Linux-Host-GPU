@@ -5,6 +5,7 @@
 
 #include <linux/kvm_host.h>
 #include <linux/hugetlb.h>
+#include <linux/xarray.h>
 
 #include <asm/kvm_emulate.h>
 #include <asm/kvm_mmu.h>
@@ -12,6 +13,33 @@
 #include <asm/virt.h>
 
 #include <asm/kvm_pgtable.h>
+
+/* Routing is an availability aid. RMM retains authenticated event/LR state.
+ * Safe references prevent a notification racing target VM destruction.
+ */
+static DEFINE_XARRAY(realm_xshm_routes);
+
+void kvm_realm_xshm_wake(phys_addr_t target_rd)
+{
+	struct kvm_vcpu *vcpu;
+	struct kvm *target;
+
+	if (!IS_ALIGNED(target_rd, PAGE_SIZE))
+		return;
+	xa_lock(&realm_xshm_routes);
+	target = xa_load(&realm_xshm_routes, target_rd >> PAGE_SHIFT);
+	if (target && !kvm_get_kvm_safe(target))
+		target = NULL;
+	xa_unlock(&realm_xshm_routes);
+	if (!target)
+		return;
+	vcpu = kvm_get_vcpu(target, 0);
+	if (vcpu) {
+		atomic_set(&vcpu->arch.rec.xshm_wake_pending, 1);
+		kvm_vcpu_kick(vcpu);
+	}
+	kvm_put_kvm(target);
+}
 
 static unsigned long rmm_feat_reg0;
 
@@ -953,95 +981,31 @@ static int populate_par_region(struct kvm *kvm,
 		goto out;
 	}
 
-	mmap_read_lock(current->mm);
-
-	ipa = ipa_base;
-	while (ipa < ipa_end) {
-		struct vm_area_struct *vma;
-		unsigned long map_size;
-		unsigned int vma_shift;
-		unsigned long offset;
-		unsigned long hva;
-		struct page *page;
-		kvm_pfn_t pfn;
-		int level;
-
-		hva = gfn_to_hva_memslot(memslot, gpa_to_gfn(ipa));
-		vma = vma_lookup(current->mm, hva);
-		if (!vma) {
-			ret = -EFAULT;
-			break;
-		}
-
-		/* FIXME: Currently we only support 4k sized mappings */
-		vma_shift = PAGE_SHIFT;
-
-		map_size = 1 << vma_shift;
-
-		ipa = ALIGN_DOWN(ipa, map_size);
-
-		switch (map_size) {
-		case RME_L2_BLOCK_SIZE:
-			level = 2;
-			break;
-		case PAGE_SIZE:
-			level = 3;
-			break;
-		default:
-			WARN_ONCE(1, "Unsupported vma_shift %d", vma_shift);
-			ret = -EFAULT;
-			break;
-		}
+	/* Only 4 KiB population is supported. gfn_to_pfn_memslot() invokes
+	 * GUP, which acquires mmap_lock itself. Holding an outer read lock
+	 * would recurse behind a pending writer and deadlock this VMM.
+	 * The PFN reference keeps the source page alive through DATA_CREATE.
+	 */
+	for (ipa = ipa_base; ipa < ipa_end; ipa += PAGE_SIZE) {
+		kvm_pfn_t pfn, priv_pfn;
+		int order;
 
 		pfn = gfn_to_pfn_memslot(memslot, gpa_to_gfn(ipa));
-
 		if (is_error_pfn(pfn)) {
 			ret = -EFAULT;
 			break;
 		}
-
-		if (level < RME_RTT_MAX_LEVEL) {
-			/*
-			 * A temporary RTT is needed during the map, precreate
-			 * it, however if there is an error (e.g. missing
-			 * parent tables) this will be handled in the
-			 * realm_create_protected_data_page() call.
-			 */
-			realm_create_rtt_levels(realm, ipa, level,
-						RME_RTT_MAX_LEVEL, NULL);
-		}
-
-		page = pfn_to_page(pfn);
-
-		for (offset = 0; offset < map_size && !ret;
-		     offset += PAGE_SIZE, page++) {
-			phys_addr_t page_ipa = ipa + offset;
-			kvm_pfn_t priv_pfn;
-			int order;
-
-			ret = kvm_gmem_get_pfn(kvm, memslot,
-					       page_ipa >> PAGE_SHIFT,
-					       &priv_pfn, &order);
-			if (ret)
-				break;
-
-			ret = realm_create_protected_data_page(realm, page_ipa,
-							       pfn_to_page(priv_pfn),
-							       page, data_flags);
-		}
-
+		ret = kvm_gmem_get_pfn(kvm, memslot, gpa_to_gfn(ipa),
+				       &priv_pfn, &order);
+		if (!ret)
+			ret = realm_create_protected_data_page(realm, ipa,
+					pfn_to_page(priv_pfn), pfn_to_page(pfn),
+					data_flags);
 		kvm_release_pfn_clean(pfn);
-
 		if (ret)
 			break;
-
-		if (level == 2)
-			fold_rtt(realm, ipa, level);
-
-		ipa += map_size;
 	}
 
-	mmap_read_unlock(current->mm);
 
 out:
 	srcu_read_unlock(&kvm->srcu, idx);
@@ -1208,12 +1172,20 @@ static int kvm_init_ipa_range_realm(struct kvm *kvm,
 static int kvm_activate_realm(struct kvm *kvm)
 {
 	struct realm *realm = &kvm->arch.realm;
+	unsigned long route;
+	int ret;
 
 	if (kvm_realm_state(kvm) != REALM_STATE_NEW)
 		return -EINVAL;
 
-	if (rmi_realm_activate(virt_to_phys(realm->rd)))
+	route = virt_to_phys(realm->rd) >> PAGE_SHIFT;
+	ret = xa_insert(&realm_xshm_routes, route, kvm, GFP_KERNEL);
+	if (ret)
+		return ret;
+	if (rmi_realm_activate(virt_to_phys(realm->rd))) {
+		xa_erase(&realm_xshm_routes, route);
 		return -ENXIO;
+	}
 
 	WRITE_ONCE(realm->state, REALM_STATE_ACTIVE);
 	return 0;
@@ -1385,6 +1357,9 @@ void kvm_destroy_realm(struct kvm *kvm)
 	struct kvm_pgtable *pgt = kvm->arch.mmu.pgt;
 	int i;
 
+	if (realm->rd)
+		xa_erase(&realm_xshm_routes, virt_to_phys(realm->rd) >> PAGE_SHIFT);
+
 	if (realm->params) {
 		free_page((unsigned long)realm->params);
 		realm->params = NULL;
@@ -1445,6 +1420,8 @@ int kvm_rec_enter(struct kvm_vcpu *vcpu)
 	if (kvm_realm_state(vcpu->kvm) != REALM_STATE_ACTIVE)
 		return -EINVAL;
 
+	/* Re-entry lets RMM inspect its pending event; this flag is no authority. */
+	atomic_set(&rec->xshm_wake_pending, 0);
 	return rmi_rec_enter(virt_to_phys(rec->rec_page),
 			     virt_to_phys(rec->run));
 }

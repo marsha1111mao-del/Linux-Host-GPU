@@ -4,6 +4,8 @@
 #include <linux/bits.h>
 
 #define GPU_ID						0x0
+#define GPU_MMU_FEATURES				0x14
+#define GPU_MMU_FEATURES_PA_BITS(x)		(((x) >> 8) & GENMASK(7, 0))
 
 #define GPU_INT_RAWSTAT				0x20
 #define GPU_INT_CLEAR					0x24

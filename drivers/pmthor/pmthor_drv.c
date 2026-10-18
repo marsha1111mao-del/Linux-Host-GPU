@@ -19,6 +19,11 @@
 #include <linux/pmthor_gpu.h>
 #include <linux/sched/mm.h>
 #include <linux/xarray.h>
+#include <linux/dma-mapping.h>
+#include <linux/devfreq.h>
+#include <linux/devfreq_cooling.h>
+#include <linux/pm_opp.h>
+#include <linux/regulator/consumer.h>
 
 #include "pmthor_drv.h"
 #include "pmthor_regs.h"
@@ -55,6 +60,11 @@ static void pmthor_gpu_session_release(struct pmthor_device *ptdev)
 	xa_for_each(&session->pfns, pfn, entry) {
 		struct page *page = pfn_to_page(pfn);
 
+		/* All accepted mappings have DMA address == raw HPA. The GPU
+		 * has been reset and both device/VM owners are gone here.
+		 */
+		dma_unmap_page(session->dev, PFN_PHYS(pfn), PAGE_SIZE,
+			       DMA_BIDIRECTIONAL);
 		set_page_dirty_lock(page);
 		put_page(page);
 		if (!(++released % 1024))
@@ -104,6 +114,7 @@ int pmthor_gpu_track_pfn(struct pmthor_gpu_session **vm_session,
 {
 	struct pmthor_device *ptdev;
 	struct pmthor_gpu_session *session;
+	dma_addr_t dma_addr;
 	int ret = -ENODEV;
 
 	if (!pfn_valid(pfn) || PageReserved(pfn_to_page(pfn)))
@@ -130,10 +141,34 @@ int pmthor_gpu_track_pfn(struct pmthor_gpu_session **vm_session,
 		*vm_session = session;
 	}
 
+	/* Never repeat cache ownership transitions for a live GPU page. */
+	if (xa_load(&session->pfns, pfn)) {
+		ret = -EBUSY;
+		goto out_owner;
+	}
+
+	/* Pinning a memfd page does not prepare it for noncoherent DMA.
+	 * Map it before exposing its HPA and retain that mapping until reset.
+	 * The raw-HPA ABI cannot represent an IOMMU or bounce-buffer address.
+	 */
+	dma_addr = dma_map_page(session->dev, pfn_to_page(pfn), 0, PAGE_SIZE,
+				DMA_BIDIRECTIONAL);
+	if (dma_mapping_error(session->dev, dma_addr)) {
+		ret = -EIO;
+		goto out_owner;
+	}
+	if (dma_addr != PFN_PHYS(pfn)) {
+		dma_unmap_page(session->dev, dma_addr, PAGE_SIZE, DMA_BIDIRECTIONAL);
+		ret = -EOPNOTSUPP;
+		goto out_owner;
+	}
+
 	ret = xa_insert(&session->pfns, pfn, xa_mk_value(1),
 			GFP_KERNEL_ACCOUNT);
 	if (!ret)
 		session->pfn_count++;
+	else
+		dma_unmap_page(session->dev, dma_addr, PAGE_SIZE, DMA_BIDIRECTIONAL);
 
 out_owner:
 	mutex_unlock(&ptdev->owner_lock);
@@ -333,14 +368,22 @@ static int pmthor_vfio_irq_cleanup(struct pmthor_device *ptdev)
 	return ret;
 }
 
+static void pmthor_pm_detach(void *data)
+{
+	dev_pm_domain_detach(data, true);
+}
+
 int pmthor_pm_init(struct pmthor_device *ptdev)
 {
-	return dev_pm_domain_attach(ptdev->dev, true);
+	int ret = dev_pm_domain_attach(ptdev->dev, true);
+
+	if (ret)
+		return ret;
+	return devm_add_action_or_reset(ptdev->dev, pmthor_pm_detach, ptdev->dev);
 }
 
 int pmthor_clk_init(struct pmthor_device *ptdev)
 {
-	int ret = 0;
 	ptdev->clks.core = devm_clk_get(ptdev->dev, NULL);
 	if (IS_ERR(ptdev->clks.core))
 		return dev_err_probe(ptdev->dev, PTR_ERR(ptdev->clks.core),
@@ -358,15 +401,128 @@ int pmthor_clk_init(struct pmthor_device *ptdev)
 
 	pr_info("clock rate = %lu\n", clk_get_rate(ptdev->clks.core));
 
+	return 0;
+}
+
+static int pmthor_devfreq_target(struct device *dev, unsigned long *freq,
+				 u32 flags)
+{
+	struct pmthor_device *ptdev = dev_get_drvdata(dev);
+	struct dev_pm_opp *opp;
+	int ret;
+
+	opp = devfreq_recommended_opp(dev, freq, flags);
+	if (IS_ERR(opp))
+		return PTR_ERR(opp);
+	dev_pm_opp_put(opp);
+
+	/* Serialize rate changes with owner teardown and hardware reset. */
+	mutex_lock(&ptdev->owner_lock);
+	ret = dev_pm_opp_set_rate(dev, *freq);
+	mutex_unlock(&ptdev->owner_lock);
+	return ret;
+}
+
+static void pmthor_cooling_unregister(void *data)
+{
+	devfreq_cooling_unregister(data);
+}
+
+static void pmthor_clks_disable(void *data)
+{
+	struct pmthor_device *ptdev = data;
+
+	clk_disable_unprepare(ptdev->clks.coregroup);
+	clk_disable_unprepare(ptdev->clks.stacks);
+	clk_disable_unprepare(ptdev->clks.core);
+}
+
+static int pmthor_clks_enable(struct pmthor_device *ptdev)
+{
+	int ret;
+
 	ret = clk_prepare_enable(ptdev->clks.core);
 	if (ret)
 		return ret;
 	ret = clk_prepare_enable(ptdev->clks.stacks);
 	if (ret)
-		return ret;
+		goto disable_core;
 	ret = clk_prepare_enable(ptdev->clks.coregroup);
 	if (ret)
+		goto disable_stacks;
+	return devm_add_action_or_reset(ptdev->dev, pmthor_clks_disable, ptdev);
+
+disable_stacks:
+	clk_disable_unprepare(ptdev->clks.stacks);
+disable_core:
+	clk_disable_unprepare(ptdev->clks.core);
+	return ret;
+}
+
+static int pmthor_devfreq_init(struct pmthor_device *ptdev)
+{
+	/* SRAM is coupled to mali for voltage changes, but needs its own enable
+	 * reference, as in the native Panthor driver. Retain both until remove.
+	 */
+	static const char * const supplies[] = { "mali", NULL };
+	struct device *dev = ptdev->dev;
+	struct devfreq_dev_profile *profile;
+	struct thermal_cooling_device *cooling;
+	struct dev_pm_opp *opp;
+	unsigned long freq = clk_get_rate(ptdev->clks.core);
+	int ret;
+
+	ret = devm_pm_opp_set_regulators(dev, supplies);
+	if (ret)
 		return ret;
+	ret = devm_pm_opp_of_add_table(dev);
+	if (ret)
+		return ret;
+	ret = devm_regulator_get_enable_optional(dev, "sram");
+	if (ret && ret != -ENODEV)
+		return ret;
+
+	opp = devfreq_recommended_opp(dev, &freq, 0);
+	if (IS_ERR(opp))
+		return PTR_ERR(opp);
+	ret = dev_pm_opp_set_opp(dev, opp);
+	dev_pm_opp_put(opp);
+	if (ret)
+		return ret;
+	/* Enable clocks after supplies, before registering rate-changing
+	 * callbacks. Reverse devres cleanup then has the same safe order.
+	 */
+	ret = pmthor_clks_enable(ptdev);
+	if (ret)
+		return ret;
+
+	profile = devm_kzalloc(dev, sizeof(*profile), GFP_KERNEL);
+	if (!profile)
+		return -ENOMEM;
+	profile->initial_freq = freq;
+	profile->target = pmthor_devfreq_target;
+	/* Actual scheduler utilization lives in the Proxy. Provide explicit OPP
+	 * control, not fabricated busy counters for an ondemand governor.
+	 */
+	ptdev->devfreq = devm_devfreq_add_device(dev, profile,
+					       DEVFREQ_GOV_USERSPACE, NULL);
+	if (IS_ERR(ptdev->devfreq))
+		return PTR_ERR(ptdev->devfreq);
+	ret = devm_devfreq_register_opp_notifier(dev, ptdev->devfreq);
+	if (ret)
+		return ret;
+
+	if (IS_ENABLED(CONFIG_DEVFREQ_THERMAL)) {
+		cooling = of_devfreq_cooling_register(dev->of_node, ptdev->devfreq);
+		if (IS_ERR(cooling))
+			return PTR_ERR(cooling);
+		ret = devm_add_action_or_reset(dev, pmthor_cooling_unregister, cooling);
+		if (ret)
+			return ret;
+	}
+
+	dev_info(dev, "pmthor: userspace OPP control ready, initial_hz=%lu actual_hz=%lu\n",
+		 freq, clk_get_rate(ptdev->clks.core));
 	return 0;
 }
 
@@ -702,6 +858,7 @@ static int pmthor_probe(struct platform_device *pdev)
 {
 	struct pmthor_device *ptdev;
 	struct resource *res;
+	u32 pa_bits;
 	int ret;
 
 	pr_info("pmthor: probe starting...\n");
@@ -711,6 +868,7 @@ static int pmthor_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	ptdev->dev = &pdev->dev;
 	mutex_init(&ptdev->owner_lock);
+	platform_set_drvdata(pdev, ptdev);
 
 	// 1. 硬件资源初始化
 	ret = pmthor_clk_init(ptdev);
@@ -731,6 +889,20 @@ static int pmthor_probe(struct platform_device *pdev)
 		return PTR_ERR(ptdev->iomem);
 	}
 	ptdev->phys_addr = res->start;
+
+	/* Complete managed power setup before IRQ registration, so even an
+	 * immediate devres-action failure can gate clocks without IRQ cleanup
+	 * subsequently accessing an unclocked device.
+	 */
+	ret = pmthor_devfreq_init(ptdev);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret, "initialize OPP controls failed\n");
+	pa_bits = GPU_MMU_FEATURES_PA_BITS(gpu_read(ptdev, GPU_MMU_FEATURES));
+	if (pa_bits < 32 || pa_bits > 64)
+		return -EINVAL;
+	ret = dma_set_mask_and_coherent(ptdev->dev, DMA_BIT_MASK(pa_bits));
+	if (ret)
+		return ret;
 
 	// 2. 中断初始化
 	ret = pmthor_vfio_irq_init(ptdev);
@@ -782,8 +954,9 @@ static void pmthor_remove(struct platform_device *pdev)
 		dev_warn(ptdev->dev,
 			 "pmthor: removing active/unquiesced GPU; retaining page references\n");
 	mutex_unlock(&ptdev->owner_lock);
-	clk_disable_unprepare(ptdev->clks.core);
-	dev_pm_domain_detach(ptdev->dev, true);
+	/* Devres removes cooling/devfreq callbacks, gates clocks, then releases
+	 * OPP/supply references and the power domain, including probe unwind.
+	 */
 }
 
 static const struct of_device_id pmthor_of_match[] = {

@@ -3,6 +3,8 @@
 config PMTHOR
 	tristate "Pmthor"
 	depends on OF && ARM64
+	select PM_DEVFREQ
+	select DEVFREQ_GOV_USERSPACE
 	help
 	  DRM driver for ARM Mali CSF-based GPUs.
 
