@@ -25,6 +25,11 @@
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#ifdef CONFIG_OPENCCA_MANAGED_IOMMU
+#include <linux/arm-smccc.h>
+#include "opencca-dma-guard.h"
+
+#endif
 
 #include "iommu-pages.h"
 
@@ -79,12 +84,17 @@
   * Support mapping any size that fits in one page table:
   *   4 KiB to 4 MiB
   */
+#ifdef CONFIG_OPENCCA_MANAGED_IOMMU
+#define RK_IOMMU_PGSIZE_BITMAP 0x001ff000
+#else
 #define RK_IOMMU_PGSIZE_BITMAP 0x007ff000
+#endif
 
 struct rk_iommu_domain {
 	struct list_head iommus;
 	u32 *dt; /* page directory table */
 	dma_addr_t dt_dma;
+	unsigned long managed_handle;
 	spinlock_t iommus_lock; /* lock for iommus list */
 	spinlock_t dt_lock; /* lock for modifying page directory table */
 
@@ -106,12 +116,15 @@ struct rk_iommu_ops {
 
 struct rk_iommu {
 	struct device *dev;
+	phys_addr_t base;
 	void __iomem **bases;
 	int num_mmu;
 	int num_irq;
 	struct clk_bulk_data *clocks;
 	int num_clocks;
 	bool reset_disabled;
+	bool rmm_registers_held;
+	unsigned long rmm_handle;
 	struct iommu_device iommu;
 	struct list_head node; /* entry in rk_iommu_domain.iommus */
 	struct iommu_domain *domain; /* domain to which iommu is attached */
@@ -121,6 +134,15 @@ struct rk_iommudata {
 	struct device_link *link; /* runtime PM link from IOMMU to master */
 	struct rk_iommu *iommu;
 };
+
+static inline bool rk_iommu_managed(const struct rk_iommu_domain *domain)
+{
+#ifdef CONFIG_OPENCCA_MANAGED_IOMMU
+	return domain->managed_handle != 0UL;
+#else
+	return false;
+#endif
+}
 
 static struct device *dma_dev;
 static const struct rk_iommu_ops *rk_ops;
@@ -545,6 +567,13 @@ static void log_iova(struct rk_iommu *iommu, int index, dma_addr_t iova)
 	phys_addr_t page_addr_phys = 0;
 	u32 page_flags = 0;
 
+	if (iommu->domain != &rk_identity_domain &&
+	    rk_iommu_managed(to_rk_domain(iommu->domain))) {
+		dev_err(iommu->dev, "iova = %pad: RMM-managed page fault\n",
+			&iova);
+		return;
+	}
+
 	dte_index = rk_iova_dte_index(iova);
 	pte_index = rk_iova_pte_index(iova);
 	page_offset = rk_iova_page_offset(iova);
@@ -578,6 +607,41 @@ print_it:
 		rk_pte_is_page_valid(pte), &page_addr_phys, page_flags);
 }
 
+#ifdef CONFIG_OPENCCA_MANAGED_IOMMU
+static irqreturn_t rk_iommu_rmm_irq(struct rk_iommu *iommu)
+{
+	struct arm_smccc_res result;
+	unsigned long handle = READ_ONCE(iommu->rmm_handle);
+	int ret;
+
+	if (handle == 0UL || READ_ONCE(iommu->domain) == &rk_identity_domain)
+		return IRQ_NONE;
+	ret = opencca_iommu_smc(OPENCCA_IOMMU_FAULT, handle, iommu->base,
+			       0UL, 0UL, &result);
+	if (ret) {
+		dev_err_ratelimited(iommu->dev, "RMM fault handling failed: %d\n", ret);
+		return IRQ_NONE;
+	}
+	if ((result.a1 & 0xffffffffUL) == 0UL)
+		return IRQ_NONE;
+	for (unsigned int bank = 0U; bank < iommu->num_mmu && bank < 2U; bank++) {
+		unsigned long status = (result.a1 >> (bank * OPENCCA_IOMMU_FAULT_BANK_BITS)) & 0xffffUL;
+		dma_addr_t iova = bank == 0U ? result.a2 : result.a3;
+		int flags = status & OPENCCA_IOMMU_FAULT_WRITE ? IOMMU_FAULT_WRITE : IOMMU_FAULT_READ;
+
+		if (status == 0UL)
+			continue;
+		dev_err_ratelimited(iommu->dev, "RMM fault at %pad bank=%u status=%#lx\n",
+				    &iova, bank, status);
+		if ((status & RK_MMU_IRQ_PAGE_FAULT) != 0UL &&
+		    (result.a1 & OPENCCA_IOMMU_FAULT_GUEST) == 0UL &&
+		    iommu->domain != &rk_identity_domain)
+			report_iommu_fault(iommu->domain, iommu->dev, iova, flags);
+	}
+	return IRQ_HANDLED;
+}
+#endif
+
 static irqreturn_t rk_iommu_irq(int irq, void *dev_id)
 {
 	struct rk_iommu *iommu = dev_id;
@@ -593,6 +657,14 @@ static irqreturn_t rk_iommu_irq(int irq, void *dev_id)
 
 	if (WARN_ON(clk_bulk_enable(iommu->num_clocks, iommu->clocks)))
 		goto out;
+
+#ifdef CONFIG_OPENCCA_MANAGED_IOMMU
+	if (READ_ONCE(iommu->rmm_handle) != 0UL) {
+		ret = rk_iommu_rmm_irq(iommu);
+		clk_bulk_disable(iommu->num_clocks, iommu->clocks);
+		goto out;
+	}
+#endif
 
 	for (i = 0; i < iommu->num_mmu; i++) {
 		int_status = rk_iommu_read(iommu->bases[i], RK_MMU_INT_STATUS);
@@ -655,6 +727,12 @@ static phys_addr_t rk_iommu_iova_to_phys(struct iommu_domain *domain,
 	phys_addr_t pt_phys, phys = 0;
 	u32 dte, pte;
 	u32 *page_table;
+
+#ifdef CONFIG_OPENCCA_MANAGED_IOMMU
+	if (rk_iommu_managed(rk_domain))
+		return opencca_iommu_iova_to_phys(rk_domain->managed_handle,
+						  iova);
+#endif
 
 	spin_lock_irqsave(&rk_domain->dt_lock, flags);
 
@@ -828,6 +906,11 @@ static int rk_iommu_map(struct iommu_domain *domain, unsigned long _iova,
 	u32 dte_index, pte_index;
 	int ret;
 
+#ifdef CONFIG_OPENCCA_MANAGED_IOMMU
+	if (rk_iommu_managed(rk_domain))
+		return opencca_iommu_map(rk_domain->managed_handle, iova,
+					 paddr, size * count, prot, mapped);
+#endif
 	spin_lock_irqsave(&rk_domain->dt_lock, flags);
 
 	/*
@@ -869,6 +952,11 @@ static size_t rk_iommu_unmap(struct iommu_domain *domain, unsigned long _iova,
 	u32 *pte_addr;
 	size_t unmap_size;
 
+#ifdef CONFIG_OPENCCA_MANAGED_IOMMU
+	if (rk_iommu_managed(rk_domain))
+		return opencca_iommu_unmap(rk_domain->managed_handle, iova,
+					   size * count);
+#endif
 	spin_lock_irqsave(&rk_domain->dt_lock, flags);
 
 	/*
@@ -957,12 +1045,45 @@ out_disable_clocks:
 	return ret;
 }
 
+#ifdef CONFIG_OPENCCA_MANAGED_IOMMU
+static int rk_iommu_rmm_registers_get(struct rk_iommu *iommu)
+{
+	int ret;
+
+	if (iommu->rmm_registers_held)
+		return 0;
+
+	ret = pm_runtime_resume_and_get(iommu->dev);
+	if (ret)
+		return ret;
+
+	ret = clk_bulk_enable(iommu->num_clocks, iommu->clocks);
+	if (ret)
+		pm_runtime_put(iommu->dev);
+	else
+		iommu->rmm_registers_held = true;
+
+	return ret;
+}
+
+static void rk_iommu_rmm_registers_put(struct rk_iommu *iommu)
+{
+	if (!iommu->rmm_registers_held)
+		return;
+
+	clk_bulk_disable(iommu->num_clocks, iommu->clocks);
+	pm_runtime_put(iommu->dev);
+	iommu->rmm_registers_held = false;
+}
+#endif
+
 static int rk_iommu_identity_attach(struct iommu_domain *identity_domain,
 				    struct device *dev)
 {
 	struct rk_iommu *iommu;
 	struct rk_iommu_domain *rk_domain;
 	unsigned long flags;
+	bool managed;
 	int ret;
 
 	/* Allow 'virtual devices' (eg drm) to detach from domain */
@@ -970,18 +1091,36 @@ static int rk_iommu_identity_attach(struct iommu_domain *identity_domain,
 	if (!iommu)
 		return -ENODEV;
 
+	if (iommu->domain == identity_domain)
+		return 0;
+
 	rk_domain = to_rk_domain(iommu->domain);
+	managed = rk_iommu_managed(rk_domain);
 
 	dev_dbg(dev, "Detaching from iommu domain\n");
 
-	if (iommu->domain == identity_domain)
-		return 0;
+#ifdef CONFIG_OPENCCA_MANAGED_IOMMU
+	if (managed) {
+		ret = rk_iommu_rmm_registers_get(iommu);
+		if (!ret) {
+			ret = opencca_iommu_unbind(rk_domain->managed_handle,
+						   iommu->base);
+			if (!ret) {
+				rk_iommu_rmm_registers_put(iommu);
+			}
+		}
+		if (ret)
+			return ret;
+	}
+#endif
 
 	iommu->domain = identity_domain;
 
 	spin_lock_irqsave(&rk_domain->iommus_lock, flags);
 	list_del_init(&iommu->node);
 	spin_unlock_irqrestore(&rk_domain->iommus_lock, flags);
+	if (managed)
+		return 0;
 
 	ret = pm_runtime_get_if_in_use(iommu->dev);
 	WARN_ON_ONCE(ret < 0);
@@ -1034,6 +1173,31 @@ static int rk_iommu_attach_device(struct iommu_domain *domain,
 	list_add_tail(&iommu->node, &rk_domain->iommus);
 	spin_unlock_irqrestore(&rk_domain->iommus_lock, flags);
 
+#ifdef CONFIG_OPENCCA_MANAGED_IOMMU
+	if (rk_iommu_managed(rk_domain)) {
+		ret = rk_iommu_rmm_registers_get(iommu);
+		if (!ret) {
+			WRITE_ONCE(iommu->rmm_handle, rk_domain->managed_handle);
+			ret = opencca_iommu_bind(rk_domain->managed_handle,
+						 iommu->base);
+			if (ret) {
+				if (!opencca_iommu_unbind(rk_domain->managed_handle, iommu->base))
+					rk_iommu_rmm_registers_put(iommu);
+				else
+					dev_err(iommu->dev, "RMM bind failed; retain register power reference\n");
+			}
+		}
+		if (ret) {
+			spin_lock_irqsave(&rk_domain->iommus_lock, flags);
+			list_del_init(&iommu->node);
+			spin_unlock_irqrestore(&rk_domain->iommus_lock, flags);
+			iommu->domain = &rk_identity_domain;
+			return ret;
+		}
+		return 0;
+	}
+#endif
+
 	ret = pm_runtime_get_if_in_use(iommu->dev);
 	if (!ret || WARN_ON_ONCE(ret < 0))
 		return 0;
@@ -1057,6 +1221,21 @@ static struct iommu_domain *rk_iommu_domain_alloc_paging(struct device *dev)
 	rk_domain = kzalloc(sizeof(*rk_domain), GFP_KERNEL);
 	if (!rk_domain)
 		return NULL;
+
+#ifdef CONFIG_OPENCCA_MANAGED_IOMMU
+	spin_lock_init(&rk_domain->iommus_lock);
+	spin_lock_init(&rk_domain->dt_lock);
+	INIT_LIST_HEAD(&rk_domain->iommus);
+	if (opencca_iommu_create(&rk_domain->managed_handle)) {
+		kfree(rk_domain);
+		return NULL;
+	}
+
+	rk_domain->domain.geometry.aperture_start = 0;
+	rk_domain->domain.geometry.aperture_end = DMA_BIT_MASK(32);
+	rk_domain->domain.geometry.force_aperture = true;
+	return &rk_domain->domain;
+#endif
 
 	/*
 	 * rk32xx iommus use a 2 level pagetable.
@@ -1098,6 +1277,15 @@ static void rk_iommu_domain_free(struct iommu_domain *domain)
 	int i;
 
 	WARN_ON(!list_empty(&rk_domain->iommus));
+
+#ifdef CONFIG_OPENCCA_MANAGED_IOMMU
+	if (rk_iommu_managed(rk_domain)) {
+		if (WARN_ON(opencca_iommu_destroy(rk_domain->managed_handle)))
+			return;
+		kfree(rk_domain);
+		return;
+	}
+#endif
 
 	for (i = 0; i < NUM_DT_ENTRIES; i++) {
 		u32 dte = rk_domain->dt[i];
@@ -1219,6 +1407,8 @@ static int rk_iommu_probe(struct platform_device *pdev)
 		iommu->bases[i] = devm_ioremap_resource(&pdev->dev, res);
 		if (IS_ERR(iommu->bases[i]))
 			continue;
+		if (iommu->num_mmu == 0)
+			iommu->base = res->start;
 		iommu->num_mmu++;
 	}
 	if (iommu->num_mmu == 0)
@@ -1320,6 +1510,11 @@ static int __maybe_unused rk_iommu_suspend(struct device *dev)
 	if (iommu->domain == &rk_identity_domain)
 		return 0;
 
+#ifdef CONFIG_OPENCCA_MANAGED_IOMMU
+	if (rk_iommu_managed(to_rk_domain(iommu->domain)))
+		return 0;
+#endif
+
 	rk_iommu_disable(iommu);
 	return 0;
 }
@@ -1330,6 +1525,11 @@ static int __maybe_unused rk_iommu_resume(struct device *dev)
 
 	if (iommu->domain == &rk_identity_domain)
 		return 0;
+
+#ifdef CONFIG_OPENCCA_MANAGED_IOMMU
+	if (rk_iommu_managed(to_rk_domain(iommu->domain)))
+		return 0;
+#endif
 
 	return rk_iommu_enable(iommu);
 }

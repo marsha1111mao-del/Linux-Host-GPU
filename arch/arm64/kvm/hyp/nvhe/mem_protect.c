@@ -13,11 +13,13 @@
 #include <asm/stage2_pgtable.h>
 
 #include <hyp/fault.h>
+#include <hyp/exception.h>
 
 #include <nvhe/gfp.h>
 #include <nvhe/memory.h>
 #include <nvhe/mem_protect.h>
 #include <nvhe/mm.h>
+#include <nvhe/opencca_mmio.h>
 
 #define KVM_HOST_S2_FLAGS (KVM_PGTABLE_S2_NOFWB | KVM_PGTABLE_S2_IDMAP)
 
@@ -410,6 +412,12 @@ static bool range_is_memory(u64 start, u64 end)
 static inline int __host_stage2_idmap(u64 start, u64 end,
 				      enum kvm_pgtable_prot prot)
 {
+	if (start >= end)
+		return -EINVAL;
+	if (IS_ENABLED(CONFIG_KVM_ARM_OPENCCA) &&
+	    !opencca_host_mmio_range_allowed(start, end))
+		return -EACCES;
+
 	return kvm_pgtable_stage2_map(&host_mmu.pgt, start, end - start, start,
 				      prot, &host_s2_pool, 0);
 }
@@ -514,6 +522,10 @@ static int host_stage2_idmap(u64 addr)
 
 	prot = is_memory ? PKVM_HOST_MEM_PROT : PKVM_HOST_MMIO_PROT;
 
+	if (IS_ENABLED(CONFIG_KVM_ARM_OPENCCA) &&
+	    !opencca_host_mmio_clip_range(addr, &range.start, &range.end))
+		return -EACCES;
+
 	host_lock_component();
 	ret = host_stage2_adjust_range(addr, &range);
 	if (ret)
@@ -524,6 +536,33 @@ unlock:
 	host_unlock_component();
 
 	return ret;
+}
+
+static void host_inject_mmio_abort(u64 esr, u64 far)
+{
+	unsigned long pstate = read_sysreg_el2(SYS_SPSR);
+	unsigned long sctlr = read_sysreg_el1(SYS_SCTLR);
+	unsigned long vector = exception64_vector(pstate, PSR_MODE_EL1h);
+	bool from_kernel = (pstate & PSR_MODE_MASK) != PSR_MODE_EL0t;
+	u64 syndrome;
+
+	syndrome = ESR_ELx_EC(esr) == ESR_ELx_EC_IABT_LOW ?
+		ESR_ELx_EC_IABT_LOW : ESR_ELx_EC_DABT_LOW;
+	if (from_kernel)
+		syndrome++;
+	syndrome <<= ESR_ELx_EC_SHIFT;
+	syndrome |= esr & ESR_ELx_IL;
+	if (ESR_ELx_EC(esr) == ESR_ELx_EC_DABT_LOW)
+		syndrome |= esr & ESR_ELx_WNR;
+	syndrome |= from_kernel ? ESR_ELx_FSC_PERM_L(3) : ESR_ELx_FSC_EXTABT;
+
+	write_sysreg_el1(read_sysreg_el2(SYS_ELR), SYS_ELR);
+	write_sysreg_el1(pstate, SYS_SPSR);
+	write_sysreg_el1(far, SYS_FAR);
+	write_sysreg_el1(syndrome, SYS_ESR);
+	write_sysreg_el2(read_sysreg_el1(SYS_VBAR) + vector, SYS_ELR);
+	write_sysreg_el2(exception64_pstate(pstate, sctlr, PSR_MODE_EL1h,
+					  system_supports_mte()), SYS_SPSR);
 }
 
 void handle_host_mem_abort(struct kvm_cpu_context *host_ctxt)
@@ -543,6 +582,10 @@ void handle_host_mem_abort(struct kvm_cpu_context *host_ctxt)
 
 	addr = (fault.hpfar_el2 & HPFAR_MASK) << 8;
 	ret = host_stage2_idmap(addr);
+	if (ret == -EACCES) {
+		host_inject_mmio_abort(esr, fault.far_el2);
+		return;
+	}
 	BUG_ON(ret && ret != -EAGAIN);
 }
 

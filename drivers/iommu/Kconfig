@@ -23,6 +23,25 @@ menuconfig IOMMU_SUPPORT
 
 if IOMMU_SUPPORT
 
+config OPENCCA_DMA_GUARD
+	bool "OpenCCA RMM DMA mapping admission"
+	depends on ARM64 && IOMMU_API
+	help
+	  Reserve DMA physical ranges in the RMM before publishing device PTEs.
+	  Reject mappings of delegated Realm pages and prevent delegation of
+	  DMA-mapped pages. Requires the OpenCCA DMA guard ABI in firmware.
+	  This development hook does not by itself protect device configuration
+	  or page tables against a malicious host; platform enforcement is needed.
+
+config OPENCCA_MANAGED_IOMMU
+	bool "Delegate Rockchip IOMMU tables to RMM"
+	depends on OPENCCA_DMA_GUARD && ROCKCHIP_IOMMU
+	help
+	  Allocate Rockchip v2 page tables in RMM and program device table roots
+	  through the managed RMI service. Host identity domains park devices on
+	  RMM's empty deny-all root instead of permitting bypass.
+
+
 menu "Generic IOMMU Pagetable Support"
 
 # Selected by the actual pagetable implementations

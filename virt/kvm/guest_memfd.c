@@ -249,6 +249,10 @@ static long kvm_gmem_fallocate(struct file *file, int mode, loff_t offset,
 	return ret;
 }
 
+void __weak kvm_arch_gmem_pre_release(struct kvm *kvm)
+{
+}
+
 static int kvm_gmem_release(struct inode *inode, struct file *file)
 {
 	struct kvm_gmem *gmem = file->private_data;
@@ -264,6 +268,8 @@ static int kvm_gmem_release(struct inode *inode, struct file *file)
 	 * and free the memslot (kvm_gmem_get_file() will return NULL).
 	 */
 	mutex_lock(&kvm->slots_lock);
+
+	kvm_arch_gmem_pre_release(kvm);
 
 	filemap_invalidate_lock(inode->i_mapping);
 

@@ -28,7 +28,8 @@ static DEFINE_PER_CPU(u64, reserved_vmids);
 #define VMID_MASK		(~GENMASK(kvm_arm_vmid_bits - 1, 0))
 #define VMID_FIRST_VERSION	(1UL << kvm_arm_vmid_bits)
 
-#define NUM_USER_VMIDS		VMID_FIRST_VERSION
+#define NUM_USER_VMIDS		(VMID_FIRST_VERSION >> \
+				 IS_ENABLED(CONFIG_KVM_ARM_OPENCCA))
 #define vmid2idx(vmid)		((vmid) & ~VMID_MASK)
 #define idx2vmid(idx)		vmid2idx(idx)
 

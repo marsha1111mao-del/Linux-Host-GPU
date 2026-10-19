@@ -35,6 +35,7 @@
 
 #include "dma-iommu.h"
 #include "iommu-priv.h"
+#include "opencca-dma-guard.h"
 
 static struct kset *iommu_group_kset;
 static DEFINE_IDA(iommu_group_ida);
@@ -2471,6 +2472,10 @@ static int __iommu_map(struct iommu_domain *domain, unsigned long iova,
 
 	pr_debug("map: iova 0x%lx pa %pa size 0x%zx\n", iova, &paddr, size);
 
+	ret = opencca_dma_reserve(domain, iova, paddr, size);
+	if (ret)
+		return ret;
+
 	while (size) {
 		size_t pgsize, count, mapped = 0;
 
@@ -2494,9 +2499,13 @@ static int __iommu_map(struct iommu_domain *domain, unsigned long iova,
 	}
 
 	/* unroll mapping in case something went wrong */
-	if (ret)
+	if (ret) {
 		iommu_unmap(domain, orig_iova, orig_size - size);
-	else
+		/* The suffix never reached device PTEs. Mapped prefixes are retired
+		 * by unmap only after the driver's invalidation has completed.
+		 */
+		opencca_dma_retire(domain, orig_iova + orig_size - size, size);
+	} else
 		trace_map(orig_iova, orig_paddr, orig_size);
 
 	return ret;
@@ -2582,6 +2591,14 @@ static size_t __iommu_unmap(struct iommu_domain *domain,
 		unmapped += unmapped_page;
 	}
 
+	if (IS_ENABLED(CONFIG_OPENCCA_DMA_GUARD) && unmapped) {
+		/* Force completion even for lazy/fast unmaps before releasing the
+		 * physical reservation. Drivers such as Rockchip already invalidate
+		 * synchronously in unmap_pages and have no separate sync callback.
+		 */
+		iommu_iotlb_sync(domain, iotlb_gather);
+		opencca_dma_retire(domain, orig_iova, unmapped);
+	}
 	trace_unmap(orig_iova, size, unmapped);
 	return unmapped;
 }

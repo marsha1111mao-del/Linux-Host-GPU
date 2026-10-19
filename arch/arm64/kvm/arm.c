@@ -20,6 +20,7 @@
 #include <linux/kvm.h>
 #include <linux/kvm_irqfd.h>
 #include <linux/irqbypass.h>
+#include <linux/pmthor_gpu.h>
 #include <linux/sched/stat.h>
 #include <linux/psci.h>
 #include <trace/events/kvm.h>
@@ -313,6 +314,12 @@ static void kvm_destroy_mpidr_data(struct kvm *kvm)
 	mutex_unlock(&kvm->arch.config_lock);
 }
 
+void kvm_arch_pre_destroy_vm(struct kvm *kvm)
+{
+	pmthor_gpu_put_vm_session(kvm->arch.gpu_session);
+	kvm->arch.gpu_session = NULL;
+}
+
 /**
  * kvm_arch_destroy_vm - destroy the VM data structure
  * @kvm:	pointer to the KVM struct
@@ -324,7 +331,7 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 
 	kvm_vgic_destroy(kvm);
 
-	if (is_protected_kvm_enabled())
+	if (is_protected_kvm_enabled() && !kvm_is_realm(kvm))
 		pkvm_destroy_hyp_vm(kvm);
 
 	kvm_destroy_mpidr_data(kvm);
@@ -668,7 +675,7 @@ void kvm_arch_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 	 * We might get preempted before the vCPU actually runs, but
 	 * over-invalidation doesn't affect correctness.
 	 */
-	if (*last_ran != vcpu->vcpu_idx) {
+	if (!vcpu_is_rec(vcpu) && *last_ran != vcpu->vcpu_idx) {
 		kvm_call_hyp(__kvm_flush_cpu_context, mmu);
 		*last_ran = vcpu->vcpu_idx;
 	}
@@ -929,7 +936,7 @@ int kvm_arch_vcpu_run_pid_change(struct kvm_vcpu *vcpu)
 	if (ret)
 		return ret;
 
-	if (is_protected_kvm_enabled()) {
+	if (is_protected_kvm_enabled() && !kvm_is_realm(kvm)) {
 		ret = pkvm_create_hyp_vm(kvm);
 		if (ret)
 			return ret;
@@ -1268,7 +1275,8 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		 * making a thread's VMID inactive. So we need to call
 		 * kvm_arm_vmid_update() in non-premptible context.
 		 */
-		if (kvm_arm_vmid_update(&vcpu->arch.hw_mmu->vmid) && has_vhe())
+		if (!vcpu_is_rec(vcpu) &&
+		    kvm_arm_vmid_update(&vcpu->arch.hw_mmu->vmid) && has_vhe())
 			__load_stage2(vcpu->arch.hw_mmu,
 				      vcpu->arch.hw_mmu->arch);
 
@@ -2946,7 +2954,7 @@ static __init int kvm_arm_init(void)
 
 	in_hyp_mode = is_kernel_in_hyp_mode();
 
-	if (in_hyp_mode)
+	if (in_hyp_mode || IS_ENABLED(CONFIG_KVM_ARM_OPENCCA))
 		kvm_init_rme();
 
 	if (cpus_have_final_cap(ARM64_WORKAROUND_DEVICE_LOAD_ACQUIRE) ||

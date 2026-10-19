@@ -44,6 +44,16 @@ menuconfig KVM
 
 	  If unsure, say N.
 
+config KVM_ARM_OPENCCA
+	bool "OpenCCA non-secure Realm monitor"
+	depends on KVM
+	help
+	  Support the OpenCCA monitor which executes Realms in the non-secure
+	  world. Reserve the upper half of the hardware VMID space for Realms
+	  and allow Realm management from an EL1 host under protected KVM.
+	  The monitor must enforce the same VMID partition. This option does
+	  not provide hardware Realm isolation on systems without RME.
+
 config NVHE_EL2_DEBUG
 	bool "Debug mode for non-VHE EL2 object"
 	depends on KVM

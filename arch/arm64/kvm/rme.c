@@ -19,6 +19,19 @@
  */
 static DEFINE_XARRAY(realm_xshm_routes);
 
+void kvm_arch_gmem_pre_release(struct kvm *kvm)
+{
+	struct arm_smccc_res result;
+
+	if (!kvm_is_realm(kvm) || !READ_ONCE(kvm->arch.gpu_session))
+		return;
+	arm_smccc_1_1_smc(SMC_RMI_OPENCCA_GPU_PM,
+			  RMI_OPENCCA_GPU_RELEASE, 0, 0, 0, 0, 0, 0, &result);
+	if (result.a0 != RMI_SUCCESS)
+		pr_err_ratelimited("RMM GPU release failed before guest_memfd release: %lu\n",
+				   result.a0);
+}
+
 void kvm_realm_xshm_wake(phys_addr_t target_rd)
 {
 	struct kvm_vcpu *vcpu;
@@ -692,6 +705,9 @@ void kvm_realm_unmap_range(struct kvm *kvm, unsigned long ipa, u64 size,
 	unsigned long end = ipa + size;
 	struct realm *realm = &kvm->arch.realm;
 
+	if (realm->state == REALM_STATE_NONE)
+		return;
+
 	end = min(BIT(realm->ia_bits - 1), end);
 
 	ensure_spare_page(realm);
@@ -1204,6 +1220,9 @@ static int rme_vmid_init(void)
 		kvm_err("%s: Couldn't allocate rme vmid bitmap\n", __func__);
 		return -ENOMEM;
 	}
+
+	if (IS_ENABLED(CONFIG_KVM_ARM_OPENCCA))
+		bitmap_set(rme_vmid_bitmap, 0, vmid_count / 2);
 
 	return 0;
 }

@@ -15,6 +15,7 @@
 struct virqfd;
 struct mm_struct;
 struct pmthor_gpu_session;
+struct regulator;
 
 struct pmthor_irq_stats {
 	u64 signals;
@@ -56,22 +57,17 @@ struct pmthor_device {
 	struct mm_struct *owner_mm;
 	struct pmthor_gpu_session *gpu_session;
 	struct devfreq *devfreq;
+	struct regulator *sram_supply;
+	int opp_regulators;
+	bool clks_enabled;
 
 	phys_addr_t phys_addr;
-	void __iomem *iomem;
-	bool coherent;
 
 	struct {
 		struct clk *core;
 		struct clk *stacks;
 		struct clk *coregroup;
 	} clks;
-
-	struct {
-		atomic_t state;
-		struct mutex mmio_lock;
-		struct page *dummy_latest_flush;
-	} pm;
 
 	struct pmthor_irq job_irq;
 	struct pmthor_irq mmu_irq;
@@ -80,8 +76,6 @@ struct pmthor_device {
 
 /* 函数声明 */
 int pmthor_clk_init(struct pmthor_device *ptdev);
-int pmthor_pm_init(struct pmthor_device *ptdev);
-int pmthor_device_init(struct pmthor_device *ptdev);
 
 /* IOCTL 定义 */
 #define PMTHOR_IOCTL_SET_IRQS _IOW('P', 0x01, struct vfio_irq_set)

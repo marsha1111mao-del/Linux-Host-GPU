@@ -5,14 +5,12 @@
 #include <linux/of_irq.h>
 #include <linux/interrupt.h>
 #include <linux/clk.h>
-#include <linux/pm_domain.h>
 #include <linux/vfio.h>
 #include <linux/miscdevice.h>
 #include <linux/uaccess.h>
 #include <linux/slab.h>
 #include <linux/eventfd.h>
 #include <linux/irq.h>
-#include <linux/iopoll.h>
 #include <linux/ktime.h>
 #include <linux/math64.h>
 #include <linux/pagemap.h>
@@ -24,13 +22,13 @@
 #include <linux/devfreq_cooling.h>
 #include <linux/pm_opp.h>
 #include <linux/regulator/consumer.h>
+#include <linux/arm-smccc.h>
 
 #include "pmthor_drv.h"
-#include "pmthor_regs.h"
+#include <asm/rmi_smc.h>
 #include <asm/sysreg.h>
 
 #define VFIO_IRQ_CLEAN (1 << 6)
-#define PMTHOR_RESET_TIMEOUT_US 100000
 
 static DEFINE_MUTEX(pmthor_registry_lock);
 static struct pmthor_device *pmthor_registered_gpu;
@@ -42,7 +40,69 @@ struct pmthor_gpu_session {
 	struct device *dev;
 };
 
-static int pmthor_hw_quiesce(struct pmthor_device *ptdev, const char *reason);
+static int pmthor_rmi_pm_call(struct pmthor_device *ptdev,
+			     unsigned int operation, unsigned long argument,
+			     unsigned long error, struct arm_smccc_res *output)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_smc(SMC_RMI_OPENCCA_GPU_PM, operation, argument, error,
+			  0, 0, 0, 0, &res);
+	if (output)
+		*output = res;
+	if (res.a0 == RMI_SUCCESS)
+		return 0;
+	dev_err_ratelimited(ptdev->dev,
+			    "pmthor: RMM GPU op %u argument=%lu failed status=%lu state=%lu\n",
+			    operation, argument, res.a0, res.a1);
+	return -EIO;
+}
+
+int pmthor_gpu_bind_vm(struct pmthor_gpu_session **vm_session)
+{
+	struct pmthor_device *ptdev;
+	struct pmthor_gpu_session *session;
+	int ret = -ENODEV;
+
+	mutex_lock(&pmthor_registry_lock);
+	ptdev = pmthor_registered_gpu;
+	if (!ptdev)
+		goto out_registry;
+
+	mutex_lock(&ptdev->owner_lock);
+	if (!ptdev->opened || ptdev->owner_mm != current->mm) {
+		ret = -EPERM;
+		goto out_owner;
+	}
+	session = ptdev->gpu_session;
+	if (*vm_session && *vm_session != session) {
+		ret = -EPERM;
+		goto out_owner;
+	}
+	if (!*vm_session) {
+		session->vm_refs++;
+		*vm_session = session;
+	}
+	ret = 0;
+
+out_owner:
+	mutex_unlock(&ptdev->owner_lock);
+out_registry:
+	mutex_unlock(&pmthor_registry_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pmthor_gpu_bind_vm);
+
+static int pmthor_gpu_quiesce_coordinated(struct pmthor_device *ptdev,
+					 const char *reason, bool release)
+{
+	int ret = pmthor_rmi_pm_call(ptdev, release ? RMI_OPENCCA_GPU_RELEASE :
+				    RMI_OPENCCA_GPU_RESET, 0, 0, NULL);
+
+	if (!ret)
+		dev_info(ptdev->dev, "pmthor: RMM hardware quiesced for %s\n", reason);
+	return ret;
+}
 
 /* Caller has reset the GPU after both the device and all VMs stopped. */
 static void pmthor_gpu_session_release(struct pmthor_device *ptdev)
@@ -81,6 +141,7 @@ static void pmthor_gpu_session_release(struct pmthor_device *ptdev)
 void pmthor_gpu_put_vm_session(struct pmthor_gpu_session *session)
 {
 	struct pmthor_device *ptdev;
+	int ret;
 
 	if (!session)
 		return;
@@ -93,13 +154,14 @@ void pmthor_gpu_put_vm_session(struct pmthor_gpu_session *session)
 	if (WARN_ON_ONCE(ptdev->gpu_session != session || !session->vm_refs))
 		goto out_owner;
 	session->vm_refs--;
-	if (!session->vm_refs && !ptdev->opened) {
+	if (!session->vm_refs) {
 		/*
 		 * A still-running VM could write GPU MMIO after device close.
 		 * Reset again after the last VM is gone, before releasing HPAs.
 		 * A failure leaves the session for a later open/reset to retry.
 		 */
-		if (!pmthor_hw_quiesce(ptdev, "last VM teardown"))
+		ret = pmthor_gpu_quiesce_coordinated(ptdev, "last VM teardown", true);
+		if (!ret && !ptdev->opened)
 			pmthor_gpu_session_release(ptdev);
 	}
 out_owner:
@@ -210,75 +272,6 @@ static void pmthor_irq_stats_dump_snapshot(struct pmthor_irq *irq,
 		avg_ns, stats->masked_max_ns, stats->signal_pending);
 }
 
-static void pmthor_hw_mask_and_clear_irqs(struct pmthor_device *ptdev)
-{
-	gpu_write(ptdev, JOB_INT_MASK, 0);
-	gpu_write(ptdev, MMU_INT_MASK, 0);
-	gpu_write(ptdev, GPU_INT_MASK, 0);
-
-	gpu_write(ptdev, JOB_INT_CLEAR, gpu_read(ptdev, JOB_INT_RAWSTAT));
-	gpu_write(ptdev, MMU_INT_CLEAR, gpu_read(ptdev, MMU_INT_RAWSTAT));
-	gpu_write(ptdev, GPU_INT_CLEAR, gpu_read(ptdev, GPU_INT_RAWSTAT));
-}
-
-static int pmthor_hw_quiesce(struct pmthor_device *ptdev, const char *reason)
-{
-	u32 status, raw_gpu, raw_job, raw_mmu;
-	int ret;
-
-	if (!ptdev->iomem)
-		return -ENODEV;
-
-	pmthor_hw_mask_and_clear_irqs(ptdev);
-
-	gpu_write(ptdev, MCU_CONTROL, MCU_CONTROL_DISABLE);
-	ret = readl_poll_timeout(ptdev->iomem + MCU_STATUS, status,
-				 status == MCU_STATUS_DISABLED, 10,
-				 PMTHOR_RESET_TIMEOUT_US);
-	if (ret) {
-		dev_warn(ptdev->dev,
-			 "pmthor: MCU did not stop during %s (status=%u), resetting GPU anyway\n",
-			 reason, status);
-	}
-
-	gpu_write(ptdev, GPU_INT_CLEAR, GPU_IRQ_RESET_COMPLETED);
-	gpu_write(ptdev, GPU_CMD, GPU_SOFT_RESET);
-	ret = readl_poll_timeout(ptdev->iomem + GPU_INT_RAWSTAT, status,
-				 status & GPU_IRQ_RESET_COMPLETED, 10,
-				 PMTHOR_RESET_TIMEOUT_US);
-	if (ret) {
-		dev_warn(ptdev->dev,
-			 "pmthor: soft reset timed out during %s, issuing hard reset\n",
-			 reason);
-		gpu_write(ptdev, GPU_CMD, GPU_HARD_RESET);
-		ret = readl_poll_timeout(ptdev->iomem + GPU_INT_RAWSTAT,
-					 status,
-					 status & GPU_IRQ_RESET_COMPLETED, 10,
-					 PMTHOR_RESET_TIMEOUT_US);
-		if (ret)
-			dev_warn(ptdev->dev,
-				 "pmthor: hard reset timed out during %s\n",
-				 reason);
-	}
-
-	pmthor_hw_mask_and_clear_irqs(ptdev);
-
-	raw_gpu = gpu_read(ptdev, GPU_INT_RAWSTAT);
-	raw_job = gpu_read(ptdev, JOB_INT_RAWSTAT);
-	raw_mmu = gpu_read(ptdev, MMU_INT_RAWSTAT);
-	if (ret) {
-		dev_err(ptdev->dev,
-			"pmthor: GPU reset failed for %s; retaining page references\n",
-			reason);
-		return ret;
-	}
-	dev_info(ptdev->dev,
-		 "pmthor: hardware quiesced for %s (mcu=%u gpu_raw=%#x job_raw=%#x mmu_raw=%#x)\n",
-		 reason, gpu_read(ptdev, MCU_STATUS), raw_gpu, raw_job,
-		 raw_mmu);
-	return 0;
-}
-
 static void pmthor_irq_enable_locked(struct pmthor_irq *irq)
 {
 	if (!irq->enabled) {
@@ -347,7 +340,8 @@ static int pmthor_vfio_irq_release_session(struct pmthor_device *ptdev)
 			pmthor_irq_release_session(irqs[i]);
 	}
 
-	return pmthor_hw_quiesce(ptdev, "session release");
+	return pmthor_gpu_quiesce_coordinated(ptdev, "session release",
+					     !ptdev->gpu_session || !ptdev->gpu_session->vm_refs);
 }
 
 static int pmthor_vfio_irq_cleanup(struct pmthor_device *ptdev)
@@ -366,20 +360,6 @@ static int pmthor_vfio_irq_cleanup(struct pmthor_device *ptdev)
 		irqs[i]->name = NULL;
 	}
 	return ret;
-}
-
-static void pmthor_pm_detach(void *data)
-{
-	dev_pm_domain_detach(data, true);
-}
-
-int pmthor_pm_init(struct pmthor_device *ptdev)
-{
-	int ret = dev_pm_domain_attach(ptdev->dev, true);
-
-	if (ret)
-		return ret;
-	return devm_add_action_or_reset(ptdev->dev, pmthor_pm_detach, ptdev->dev);
 }
 
 int pmthor_clk_init(struct pmthor_device *ptdev)
@@ -414,11 +394,18 @@ static int pmthor_devfreq_target(struct device *dev, unsigned long *freq,
 	opp = devfreq_recommended_opp(dev, freq, flags);
 	if (IS_ERR(opp))
 		return PTR_ERR(opp);
+	*freq = dev_pm_opp_get_freq(opp);
 	dev_pm_opp_put(opp);
 
 	/* Serialize rate changes with owner teardown and hardware reset. */
 	mutex_lock(&ptdev->owner_lock);
-	ret = dev_pm_opp_set_rate(dev, *freq);
+	ret = ptdev->clks_enabled ?
+		pmthor_rmi_pm_call(ptdev, RMI_OPENCCA_GPU_OPP_BEGIN, *freq, 0, NULL) : -ENODEV;
+	if (!ret) {
+		ret = dev_pm_opp_set_rate(dev, *freq);
+		ret = pmthor_rmi_pm_call(ptdev, RMI_OPENCCA_GPU_OPP_END,
+					 *freq, ret != 0, NULL) ? -EIO : ret;
+	}
 	mutex_unlock(&ptdev->owner_lock);
 	return ret;
 }
@@ -432,9 +419,19 @@ static void pmthor_clks_disable(void *data)
 {
 	struct pmthor_device *ptdev = data;
 
+	mutex_lock(&ptdev->owner_lock);
+	if (!ptdev->clks_enabled)
+		goto out;
+	if (pmthor_rmi_pm_call(ptdev, RMI_OPENCCA_GPU_POWER_OFF, 0, 0, NULL)) {
+		dev_err(ptdev->dev, "pmthor: retaining clocks after rejected power-off\n");
+		goto out;
+	}
 	clk_disable_unprepare(ptdev->clks.coregroup);
 	clk_disable_unprepare(ptdev->clks.stacks);
 	clk_disable_unprepare(ptdev->clks.core);
+	ptdev->clks_enabled = false;
+out:
+	mutex_unlock(&ptdev->owner_lock);
 }
 
 static int pmthor_clks_enable(struct pmthor_device *ptdev)
@@ -450,6 +447,10 @@ static int pmthor_clks_enable(struct pmthor_device *ptdev)
 	ret = clk_prepare_enable(ptdev->clks.coregroup);
 	if (ret)
 		goto disable_stacks;
+	ptdev->clks_enabled = true;
+	ret = pmthor_rmi_pm_call(ptdev, RMI_OPENCCA_GPU_POWER_ON, 0, 0, NULL);
+	if (ret)
+		return ret;
 	return devm_add_action_or_reset(ptdev->dev, pmthor_clks_disable, ptdev);
 
 disable_stacks:
@@ -457,6 +458,19 @@ disable_stacks:
 disable_core:
 	clk_disable_unprepare(ptdev->clks.core);
 	return ret;
+}
+
+static void pmthor_supplies_release(void *data)
+{
+	struct pmthor_device *ptdev = data;
+
+	if (ptdev->clks_enabled)
+		return;
+	if (ptdev->sram_supply) {
+		regulator_disable(ptdev->sram_supply);
+		regulator_put(ptdev->sram_supply);
+	}
+	dev_pm_opp_put_regulators(ptdev->opp_regulators);
 }
 
 static int pmthor_devfreq_init(struct pmthor_device *ptdev)
@@ -472,20 +486,45 @@ static int pmthor_devfreq_init(struct pmthor_device *ptdev)
 	unsigned long freq = clk_get_rate(ptdev->clks.core);
 	int ret;
 
-	ret = devm_pm_opp_set_regulators(dev, supplies);
+	ret = dev_pm_opp_set_regulators(dev, supplies);
+	if (ret < 0)
+		return ret;
+	ptdev->opp_regulators = ret;
+	ptdev->sram_supply = regulator_get_optional(dev, "sram");
+	if (IS_ERR(ptdev->sram_supply)) {
+		ret = PTR_ERR(ptdev->sram_supply);
+		ptdev->sram_supply = NULL;
+		if (ret != -ENODEV) {
+			dev_pm_opp_put_regulators(ptdev->opp_regulators);
+			return ret;
+		}
+	} else {
+		ret = regulator_enable(ptdev->sram_supply);
+		if (ret) {
+			regulator_put(ptdev->sram_supply);
+			dev_pm_opp_put_regulators(ptdev->opp_regulators);
+			return ret;
+		}
+	}
+	ret = devm_add_action_or_reset(dev, pmthor_supplies_release, ptdev);
 	if (ret)
 		return ret;
 	ret = devm_pm_opp_of_add_table(dev);
 	if (ret)
 		return ret;
-	ret = devm_regulator_get_enable_optional(dev, "sram");
-	if (ret && ret != -ENODEV)
-		return ret;
 
 	opp = devfreq_recommended_opp(dev, &freq, 0);
 	if (IS_ERR(opp))
 		return PTR_ERR(opp);
-	ret = dev_pm_opp_set_opp(dev, opp);
+	freq = dev_pm_opp_get_freq(opp);
+	mutex_lock(&ptdev->owner_lock);
+	ret = pmthor_rmi_pm_call(ptdev, RMI_OPENCCA_GPU_OPP_BEGIN, freq, 0, NULL);
+	if (!ret) {
+		ret = dev_pm_opp_set_opp(dev, opp);
+		ret = pmthor_rmi_pm_call(ptdev, RMI_OPENCCA_GPU_OPP_END,
+					 freq, ret != 0, NULL) ? -EIO : ret;
+	}
+	mutex_unlock(&ptdev->owner_lock);
 	dev_pm_opp_put(opp);
 	if (ret)
 		return ret;
@@ -740,7 +779,7 @@ static int pmthor_misc_open(struct inode *inode, struct file *file)
 		goto out_unlock;
 	}
 
-	ret = pmthor_hw_quiesce(ptdev, "open");
+	ret = pmthor_gpu_quiesce_coordinated(ptdev, "open", true);
 	if (ret)
 		goto out_unlock;
 
@@ -877,17 +916,12 @@ static int pmthor_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	ret = pmthor_pm_init(ptdev);
-	if (ret) {
-		pr_err("pmthor: pmthor_pm_init failed: %d\n", ret);
-		return ret;
-	}
-
-	ptdev->iomem = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
-	if (IS_ERR(ptdev->iomem)) {
-		pr_err("pmthor: ioremap failed: %ld\n", PTR_ERR(ptdev->iomem));
-		return PTR_ERR(ptdev->iomem);
-	}
+	/* Runtime registers are exclusively mapped into the designated Proxy.
+	 * Host only retains the resource identity for PM and IRQ forwarding.
+	 */
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res || res->start != 0xfb000000 || resource_size(res) != 0x200000)
+		return -EINVAL;
 	ptdev->phys_addr = res->start;
 
 	/* Complete managed power setup before IRQ registration, so even an
@@ -895,20 +929,31 @@ static int pmthor_probe(struct platform_device *pdev)
 	 * subsequently accessing an unclocked device.
 	 */
 	ret = pmthor_devfreq_init(ptdev);
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret, "initialize OPP controls failed\n");
-	pa_bits = GPU_MMU_FEATURES_PA_BITS(gpu_read(ptdev, GPU_MMU_FEATURES));
-	if (pa_bits < 32 || pa_bits > 64)
-		return -EINVAL;
+	if (ret) {
+		dev_err_probe(&pdev->dev, ret, "initialize OPP controls failed\n");
+		goto err_power_off;
+	}
+	{
+		struct arm_smccc_res status;
+
+		ret = pmthor_rmi_pm_call(ptdev, RMI_OPENCCA_GPU_STATUS, 0, 0, &status);
+		if (ret)
+			goto err_power_off;
+		pa_bits = status.a2;
+	}
+	if (pa_bits < 32 || pa_bits > 64) {
+		ret = -EINVAL;
+		goto err_power_off;
+	}
 	ret = dma_set_mask_and_coherent(ptdev->dev, DMA_BIT_MASK(pa_bits));
 	if (ret)
-		return ret;
+		goto err_power_off;
 
 	// 2. 中断初始化
 	ret = pmthor_vfio_irq_init(ptdev);
 	if (ret) {
 		pr_err("pmthor: pmthor_vfio_irq_init failed: %d\n", ret);
-		return ret;
+		goto err_power_off;
 	}
 
 	// 3. 注册 MISC 设备
@@ -921,7 +966,7 @@ static int pmthor_probe(struct platform_device *pdev)
 	if (ret) {
 		pr_err("pmthor: misc_register failed: %d\n", ret);
 		pmthor_vfio_irq_cleanup(ptdev);
-		return ret;
+		goto err_power_off;
 	}
 
 	platform_set_drvdata(pdev, ptdev);
@@ -931,6 +976,10 @@ static int pmthor_probe(struct platform_device *pdev)
 	dev_info(&pdev->dev, "pmthor successfully initialized at 0x%pa\n",
 		 &ptdev->phys_addr);
 	return 0;
+
+err_power_off:
+	pmthor_clks_disable(ptdev);
+	return ret;
 }
 
 static void pmthor_remove(struct platform_device *pdev)
@@ -954,9 +1003,7 @@ static void pmthor_remove(struct platform_device *pdev)
 		dev_warn(ptdev->dev,
 			 "pmthor: removing active/unquiesced GPU; retaining page references\n");
 	mutex_unlock(&ptdev->owner_lock);
-	/* Devres removes cooling/devfreq callbacks, gates clocks, then releases
-	 * OPP/supply references and the power domain, including probe unwind.
-	 */
+	pmthor_clks_disable(ptdev);
 }
 
 static const struct of_device_id pmthor_of_match[] = {

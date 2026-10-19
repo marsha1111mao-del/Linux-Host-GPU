@@ -833,14 +833,15 @@ static void vgic_flush_lr_state(struct kvm_vcpu *vcpu)
 		vcpu->arch.vgic_cpu.vgic_v3.used_lrs = count;
 }
 
-static inline bool can_access_vgic_from_kernel(void)
+static inline bool can_access_vgic_from_kernel(struct kvm_vcpu *vcpu)
 {
 	/*
 	 * GICv2 can always be accessed from the kernel because it is
 	 * memory-mapped, and VHE systems can access GICv3 EL2 system
 	 * registers.
 	 */
-	return !static_branch_unlikely(&kvm_vgic_global_state.gicv3_cpuif) ||
+	return vcpu_is_rec(vcpu) ||
+	       !static_branch_unlikely(&kvm_vgic_global_state.gicv3_cpuif) ||
 	       has_vhe();
 }
 
@@ -874,7 +875,7 @@ void kvm_vgic_sync_hwstate(struct kvm_vcpu *vcpu)
 	if (list_empty(&vcpu->arch.vgic_cpu.ap_list_head))
 		return;
 
-	if (can_access_vgic_from_kernel())
+	if (can_access_vgic_from_kernel(vcpu))
 		vgic_save_state(vcpu);
 
 	if (!static_branch_unlikely(&kvm_vgic_global_state.gicv3_cpuif))
@@ -940,7 +941,7 @@ void kvm_vgic_flush_hwstate(struct kvm_vcpu *vcpu)
 		raw_spin_unlock(&vcpu->arch.vgic_cpu.ap_list_lock);
 	}
 
-	if (can_access_vgic_from_kernel())
+	if (can_access_vgic_from_kernel(vcpu))
 		vgic_restore_state(vcpu);
 
 	if (vgic_supports_direct_msis(vcpu->kvm))

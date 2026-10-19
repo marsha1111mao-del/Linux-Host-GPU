@@ -21,10 +21,17 @@
 struct pmthor_gpu_session;
 
 #if IS_REACHABLE(CONFIG_PMTHOR)
+int pmthor_gpu_bind_vm(struct pmthor_gpu_session **vm_session);
 int pmthor_gpu_track_pfn(struct pmthor_gpu_session **vm_session,
 			 unsigned long pfn);
 void pmthor_gpu_put_vm_session(struct pmthor_gpu_session *session);
 #else
+static inline int
+pmthor_gpu_bind_vm(struct pmthor_gpu_session **vm_session)
+{
+	return -ENODEV;
+}
+
 static inline int pmthor_gpu_track_pfn(struct pmthor_gpu_session **vm_session,
 				      unsigned long pfn)
 {

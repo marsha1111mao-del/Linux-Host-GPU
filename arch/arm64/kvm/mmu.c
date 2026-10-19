@@ -6,6 +6,7 @@
 
 #include <linux/mman.h>
 #include <linux/kvm_host.h>
+#include <linux/pmthor_gpu.h>
 #include <linux/io.h>
 #include <linux/hugetlb.h>
 #include <linux/sched/signal.h>
@@ -880,7 +881,7 @@ static int kvm_init_ipa_range(struct kvm *kvm, struct kvm_s2_mmu *mmu,
 		ipa_limit = kvm_realm_ipa_limit();
 
 	phys_shift = KVM_VM_TYPE_ARM_IPA_SIZE(type);
-	if (is_protected_kvm_enabled()) {
+	if (is_protected_kvm_enabled() && !kvm_is_realm(kvm)) {
 		phys_shift = kvm_ipa_limit;
 	} else if (phys_shift) {
 		if (phys_shift > ipa_limit ||
@@ -2407,15 +2408,40 @@ int kvm_set_mmio_region(struct kvm *kvm, struct kvm_mmio_region *mmio_region)
 	int ret;
 	int chunk = 0;
 	struct kvm_mmu_memory_cache cache = { .gfp_zero = __GFP_ZERO };
+	struct arm_smccc_res smc_res;
+	static const u64 gpu_mmio_base = 0xfb000000;
+	static const u64 gpu_mmio_size = 0x200000;
+	bool new_gpu_session;
 
 	if (kvm_is_realm(kvm)) {
 		struct realm *realm = &kvm->arch.realm;
 		u64 shared_bit = BIT_ULL(realm->ia_bits - 1);
 		unsigned long memattr = PTE_S2_MEMATTR(MT_S2_FWB_DEVICE_nGnRE);
+		phys_addr_t rd_phys = virt_to_phys(realm->rd);
 
 		if (addr >= shared_bit || size > shared_bit ||
 		    addr + size < addr || addr + size > shared_bit)
 			return -EINVAL;
+		if (addr != gpu_mmio_base || size != gpu_mmio_size ||
+		    !realm->rd)
+			return -EINVAL;
+
+		new_gpu_session = !kvm->arch.gpu_session;
+
+		ret = pmthor_gpu_bind_vm(&kvm->arch.gpu_session);
+		if (ret)
+			return ret;
+
+		arm_smccc_1_1_smc(SMC_RMI_OPENCCA_GPU_MMIO_GRANT,
+				  rd_phys, 0, 0, 0, 0, 0, 0,
+				  &smc_res);
+		if (smc_res.a0 != RMI_SUCCESS) {
+			if (new_gpu_session) {
+				pmthor_gpu_put_vm_session(kvm->arch.gpu_session);
+				kvm->arch.gpu_session = NULL;
+			}
+			return -EPERM;
+		}
 
 		pr_info("[MZH]Mapping Realm MMIO shared alias: addr=%llx shared=%llx size=%llx chunk=%llx",
 			addr, addr | shared_bit, size, chunk_size);
