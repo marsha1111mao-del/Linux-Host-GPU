@@ -1074,9 +1074,11 @@ void kvm_free_stage2_pgd(struct kvm_s2_mmu *mmu)
 	pgt = mmu->pgt;
 	if (kvm_is_realm(kvm) && (kvm_realm_state(kvm) != REALM_STATE_DEAD &&
 				  kvm_realm_state(kvm) != REALM_STATE_NONE)) {
-		kvm_stage2_unmap_range(mmu, 0, (~0ULL) & PAGE_MASK, true);
+		/* The notifier may run before REC destruction. RMM must retain
+		 * registered GPU/arena pages then, so defer the final DATA/RTT
+		 * pass to kvm_destroy_realm after trusted private reclamation.
+		 */
 		write_unlock(&kvm->mmu_lock);
-		kvm_realm_destroy_rtts(kvm, pgt->ia_bits);
 		return;
 	}
 	if (pgt) {

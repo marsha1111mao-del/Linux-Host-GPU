@@ -51,6 +51,13 @@
 #define RMI_OPENCCA_GPU_STATUS		4
 #define RMI_OPENCCA_GPU_POWER_OFF	5
 #define RMI_OPENCCA_GPU_POWER_ON		6
+#define RMI_OPENCCA_GPU_PRIVATE_RECLAIM	7
+/* GPU_PM reclaim: a0=RMI transport status, a1=device state, a2=private status.
+ * INCOMPLETE is successful bounded work, never permission to free pages.
+ */
+#define RMI_OPENCCA_GPU_PRIVATE_SUCCESS	0
+#define RMI_OPENCCA_GPU_PRIVATE_STATE	2
+#define RMI_OPENCCA_GPU_PRIVATE_INCOMPLETE 4
 
 #define RMI_ABI_MAJOR_VERSION	1
 #define RMI_ABI_MINOR_VERSION	0

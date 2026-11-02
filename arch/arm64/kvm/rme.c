@@ -192,6 +192,15 @@ static int realm_destroy_protected(struct realm *realm,
 
 loop:
 	ret = rmi_data_destroy(rd, ipa, &addr, next_addr);
+	if (RMI_RETURN_STATUS(ret) == RMI_ERROR_INPUT) {
+		/* RMM policy retains registered/donated GPU pages while their
+		 * owner still has RECs. Do not undelegate or trust output registers
+		 * from a refused operation. Final teardown retries after trusted
+		 * reclamation; any remaining refusal then prevents RD destruction.
+		 */
+		*next_addr = ipa + RME_PAGE_SIZE;
+		return -EBUSY;
+	}
 	if (RMI_RETURN_STATUS(ret) == RMI_ERROR_RTT) {
 		if (*next_addr > ipa)
 			return 0; /* UNASSIGNED */
@@ -282,13 +291,14 @@ static void realm_unmap_range_shared(struct kvm *kvm,
 	}
 }
 
-static void realm_unmap_range_private(struct kvm *kvm,
+static bool realm_unmap_range_private(struct kvm *kvm,
 				      unsigned long start,
 				      unsigned long end)
 {
 	struct realm *realm = &kvm->arch.realm;
 	ssize_t map_size = RME_PAGE_SIZE;
 	unsigned long next_addr, addr;
+	bool complete = true;
 
 	for (addr = start; addr < end; addr = next_addr) {
 		int ret;
@@ -296,10 +306,15 @@ static void realm_unmap_range_private(struct kvm *kvm,
 		next_addr = ALIGN(addr + 1, map_size);
 
 		ret = realm_destroy_protected(realm, addr, &next_addr);
+		if (ret == -EBUSY) {
+			complete = false;
+			continue;
+		}
 
 		if (WARN_ON(ret))
-			break;
+			return false;
 	}
+	return complete;
 }
 
 static int get_start_level(struct realm *realm)
@@ -307,7 +322,7 @@ static int get_start_level(struct realm *realm)
 	return 4 - stage2_pgtable_levels(realm->ia_bits);
 }
 
-static void realm_unmap_range(struct kvm *kvm,
+static bool realm_unmap_range(struct kvm *kvm,
 			      unsigned long start,
 			      unsigned long end,
 			      bool unmap_private)
@@ -315,11 +330,10 @@ static void realm_unmap_range(struct kvm *kvm,
 	struct realm *realm = &kvm->arch.realm;
 
 	if (realm->state == REALM_STATE_NONE)
-		return;
+		return true;
 
 	realm_unmap_range_shared(kvm, get_start_level(realm), start, end);
-	if (unmap_private)
-		realm_unmap_range_private(kvm, start, end);
+	return !unmap_private || realm_unmap_range_private(kvm, start, end);
 }
 
 u32 kvm_realm_ipa_limit(void)
@@ -692,13 +706,6 @@ static void ensure_spare_page(struct realm *realm)
 		free_delegated_page(realm, tmp_rtt);
 }
 
-void kvm_realm_destroy_rtts(struct kvm *kvm, u32 ia_bits)
-{
-	struct realm *realm = &kvm->arch.realm;
-
-	WARN_ON(realm_tear_down_rtt_range(realm, 0, (1UL << ia_bits)));
-}
-
 void kvm_realm_unmap_range(struct kvm *kvm, unsigned long ipa, u64 size,
 			   bool unmap_private)
 {
@@ -712,9 +719,10 @@ void kvm_realm_unmap_range(struct kvm *kvm, unsigned long ipa, u64 size,
 
 	ensure_spare_page(realm);
 
-	realm_unmap_range(kvm, ipa, end, unmap_private);
-
-	if (unmap_private)
+	/* Folding a table that still contains RMM-retained pages is neither
+	 * useful nor allowed. Keep it until the final post-REC retry.
+	 */
+	if (realm_unmap_range(kvm, ipa, end, unmap_private) && unmap_private)
 		realm_fold_rtt_range(realm, ipa, end);
 }
 
@@ -1370,6 +1378,43 @@ int kvm_realm_enable_cap(struct kvm *kvm, struct kvm_enable_cap *cap)
 	return r;
 }
 
+static int realm_reclaim_private_gpu(struct realm *realm)
+{
+	struct arm_smccc_res result;
+	bool released = false;
+
+	/* At most 1024 object headers + 1024 registered 512-page blocks,
+	 * and one trusted RELEASE. RMM authenticates the actual RD/REC lifetime;
+	 * reaching this Host destructor is not itself proof that a REC is gone.
+	 */
+	for (unsigned int attempt = 0; attempt < 2049; attempt++) {
+		arm_smccc_1_1_smc(SMC_RMI_OPENCCA_GPU_PM,
+			RMI_OPENCCA_GPU_PRIVATE_RECLAIM, virt_to_phys(realm->rd),
+			0, 0, 0, 0, 0, &result);
+		if (result.a0 == RMI_SUCCESS) {
+			if (result.a2 == RMI_OPENCCA_GPU_PRIVATE_SUCCESS)
+				return 0;
+			if (result.a2 != RMI_OPENCCA_GPU_PRIVATE_INCOMPLETE)
+				return -EIO;
+		} else if (!released && result.a0 == RMI_ERROR_INPUT &&
+			   result.a2 == RMI_OPENCCA_GPU_PRIVATE_STATE) {
+			/* A dead Client can still own GPU references. Whole-device
+			 * revocation affects availability of the other Clients, but
+			 * never permits releasing their BOs or claiming completion.
+			 */
+			released = true;
+			arm_smccc_1_1_smc(SMC_RMI_OPENCCA_GPU_PM,
+				RMI_OPENCCA_GPU_RELEASE, 0, 0, 0, 0, 0, 0, &result);
+			if (result.a0 != RMI_SUCCESS)
+				return -EIO;
+		} else {
+			return -EIO;
+		}
+		cond_resched();
+	}
+	return -ETIMEDOUT;
+}
+
 void kvm_destroy_realm(struct kvm *kvm)
 {
 	struct realm *realm = &kvm->arch.realm;
@@ -1392,6 +1437,21 @@ void kvm_destroy_realm(struct kvm *kvm)
 	if (realm->rd) {
 		phys_addr_t rd_phys = virt_to_phys(realm->rd);
 
+		/* All vCPUs were destroyed by kvm_arch_destroy_vm. Earlier MMU
+		 * notifier teardown may have retained private/donated DATA entries;
+		 * only after RMM cleanup succeeds may those entries be retried.
+		 */
+		if (WARN_ON(realm_reclaim_private_gpu(realm)))
+			return;
+		/* guest_memfd invalidation can precede REC destruction and retain
+		 * protected pages. Reclamation restored donated entries; now retry
+		 * all DATA before trying to remove their RTTs.
+		 */
+		if (WARN_ON(!realm_unmap_range(kvm, 0,
+				1UL << (realm->ia_bits - 1), true)))
+			return;
+		if (WARN_ON(realm_tear_down_rtt_range(realm, 0, 1UL << pgt->ia_bits)))
+			return;
 		if (WARN_ON(rmi_realm_destroy(rd_phys)))
 			return;
 		if (WARN_ON(rmi_granule_undelegate(rd_phys)))
